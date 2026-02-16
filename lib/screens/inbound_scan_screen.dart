@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class InboundScanScreen extends StatefulWidget {
@@ -18,6 +17,15 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
   Map<String, dynamic>? location;  // type=location
   bool scanningProduct = true;     // true: 제품QR 단계, false: 위치QR 단계
   bool isProcessing = false;       // 연속 스캔 방지
+  bool isSending = false;          // 전송 중 중복 클릭 방지
+
+  // ✅ 너의 Apps Script URL (네가 쓰던 것)
+  static const String sheetUrl =
+      'https://script.google.com/macros/s/AKfycbxRO0zYqYdz6Wvuk1mTHzWSwSFhsE3BcTqtk8A9-tZU3fmJZB-EWoPScBTuMCwWfQ/exec';
+
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 
   void reset() {
     setState(() {
@@ -25,17 +33,28 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       location = null;
       scanningProduct = true;
       isProcessing = false;
+      isSending = false;
     });
     controller.start();
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  Future<void> sendInboundToGoogleSheet(Map<String, dynamic> inbound) async {
+    final res = await http.post(
+      Uri.parse(sheetUrl),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(inbound),
+    );
+
+    // Apps Script는 302/200 등 다양하게 올 수 있어서
+    // MVP에서는 200대 아니면 실패로 처리
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception('Sheet 전송 실패: ${res.statusCode} / ${res.body}');
+    }
   }
 
   Future<void> onDetect(BarcodeCapture capture) async {
-    if (isProcessing) return; // ✅ 연속 인식 방지
-    final raw = capture.barcodes.firstOrNull?.rawValue;
+    if (isProcessing) return;
+    final raw = capture.barcodes.first.rawValue;
     if (raw == null) return;
 
     Map<String, dynamic> data;
@@ -56,11 +75,13 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
         setState(() => isProcessing = false);
         return;
       }
+
       setState(() {
         product = data;
         scanningProduct = false; // 다음은 위치QR
         isProcessing = false;
       });
+
       _toast('제품 QR 인식 완료! 이제 위치 QR을 스캔하세요.');
       return;
     }
@@ -77,10 +98,48 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       isProcessing = false;
     });
 
-    // 위치까지 완료되면 카메라 일단 멈춰도 됨(선택)
+    // 위치까지 완료되면 카메라 멈춤
     controller.stop();
+    _toast('위치 QR 인식 완료! 아래 [입고 확정]을 누르세요.');
+  }
 
-    _toast('위치 QR 인식 완료! 이제 입고 확정 버튼을 누르세요.');
+  Future<void> confirmInbound() async {
+    if (product == null || location == null) return;
+    if (isSending) return;
+
+    setState(() => isSending = true);
+
+    try {
+      final inbound = <String, dynamic>{
+        "time": DateTime.now().toIso8601String(),
+        "type": "inbound",
+
+        // 제품QR에서 온 값
+        "batchId": product!["batchId"],
+        "sku": product!["sku"],
+        "name": product!["name"],
+        "producer": product!["producer"],
+        "producedAt": product!["producedAt"],
+        "qty": product!["qty"],
+
+        // 위치QR에서 온 값
+        "locationCode": location!["locationCode"],
+        "warehouse": location!["warehouse"],
+        "zone": location!["zone"],
+        "rack": location!["rack"],
+        "bin": location!["bin"],
+      };
+
+      await sendInboundToGoogleSheet(inbound);
+
+      if (!mounted) return;
+      _toast('입고 확정 완료! (구글시트 기록됨)');
+      reset();
+    } catch (e) {
+      if (!mounted) return;
+      _toast('입고 전송 실패: $e');
+      setState(() => isSending = false);
+    }
   }
 
   @override
@@ -97,9 +156,7 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
         ? '-'
         : '${product!['sku']} / ${product!['batchId']} / qty=${product!['qty']}';
 
-    final locationText = location == null
-        ? '-'
-        : '${location!['locationCode']}';
+    final locationText = location == null ? '-' : '${location!['locationCode']}';
 
     final canConfirm = (product != null && location != null);
 
@@ -135,7 +192,7 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
               ),
             ),
 
-            // ✅ 스캐너는 고정 높이로 (아래 패널이 반드시 보이게)
+            // ✅ 스캐너
             SizedBox(
               height: 320,
               child: ClipRRect(
@@ -152,7 +209,7 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
 
             const SizedBox(height: 12),
 
-            // ✅ 하단 패널(결과 + 버튼) — 항상 보이게
+            // ✅ 하단 패널(결과 + 버튼)
             Padding(
               padding: const EdgeInsets.all(12),
               child: Card(
@@ -169,35 +226,50 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
                       const SizedBox(height: 12),
 
                       FilledButton.icon(
-                        onPressed: canConfirm
-                            ? () {
-                          // ✅ 지금은 MVP: 확인만
-                          final sku = product!['sku'];
-                          final batchId = product!['batchId'];
-                          final loc = location!['locationCode'];
-
-                          _toast('입고 완료(MVP): $sku / $batchId → $loc');
-                          reset();
-                        }
-                            : null,
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: const Text('입고 확정'),
+                        onPressed: canConfirm ? confirmInbound : null,
+                        icon: isSending
+                            ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                            : const Icon(Icons.check_circle_outline),
+                        label: Text(isSending ? '전송 중...' : '입고 확정'),
                       ),
 
                       const SizedBox(height: 8),
+
                       OutlinedButton.icon(
                         onPressed: scanningProduct
                             ? null
                             : () {
-                          // 위치만 다시 스캔하고 싶을 때
                           setState(() {
                             location = null;
+                            isSending = false;
                           });
                           controller.start();
                           _toast('위치 QR을 다시 스캔하세요.');
                         },
                         icon: const Icon(Icons.qr_code_scanner),
                         label: const Text('위치만 다시 스캔'),
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      OutlinedButton.icon(
+                        onPressed: scanningProduct
+                            ? () {
+                          // 제품 단계에서 카메라 멈춰있을 수도 있으니 안전하게 start
+                          controller.start();
+                          _toast('제품 QR을 스캔하세요.');
+                        }
+                            : () {
+                          // 제품까지 다시 하려면 완전 리셋
+                          reset();
+                          _toast('처음을 다시 시작합니다. 제품 QR부터 스캔하세요.');
+                        },
+                        icon: const Icon(Icons.restart_alt),
+                        label: Text(scanningProduct ? '스캔 재개' : '처음부터 다시'),
                       ),
                     ],
                   ),
