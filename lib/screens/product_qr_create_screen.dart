@@ -1,7 +1,6 @@
-// lib/screens/product_qr_create_screen.dart
 import 'dart:convert';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -21,25 +20,27 @@ class ProductQrCreateScreen extends StatefulWidget {
 }
 
 class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
-  // ✅ 생산자 4명
+  // ====== 생산자(단일선택) ======
   final List<String> producers = ['안승탁', '박운서', '이병섭', '이응직'];
   String? selectedProducer;
 
-  // ✅ 카테고리
+  // ====== 카테고리(단일선택) ======
   final List<String> categories = ['전체', '대발', '배접', '2.7/3.6/120', '옻지', '인쇄/나염', '기타'];
   String selectedCategory = '전체';
 
-  // ✅ 수량: 기본 100 (Pack), 아니면 1~99
-  int qty = 100;
+  // ====== 속성태그(복수선택) ======
+  final List<String> attributeTags = ['순지', '국내', '백닥', '무표백', '황촉규', '無'];
+  final Set<String> selectedAttributes = {};
 
-  // ✅ 생산일자: 기본 오늘
-  late DateTime producedAt;
+  // ====== 수량: 기본 100(Pack) + 1~99 다이얼 ======
+  int qty = 100; // ✅ 기본 100
+  DateTime producedAt = DateTime.now();
 
   String? batchId;
   String? qrData;
   int dailySerial = 1;
 
-  // ✅ 품목 리스트(49개)
+  // ====== 품목(49개) ======
   final List<ProductItem> items = const [
     ProductItem(name: '배접지(140*80)', sku: 'HJ-BJ-140x80'),
     ProductItem(name: '순지 배접지(140*80)', sku: 'HJ-BJ-SJ-140x80'),
@@ -94,13 +95,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
 
   ProductItem? selectedItem;
 
-  @override
-  void initState() {
-    super.initState();
-    producedAt = DateTime.now();
-  }
-
-  // ✅ 카테고리 분류(이름 기반)
+  // ====== 카테고리 분류 ======
   String _categoryOf(ProductItem it) {
     final n = it.name;
     if (n.contains('대발') || n.contains('소발')) return '대발';
@@ -111,26 +106,65 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
     return '기타';
   }
 
-  List<ProductItem> get _filteredItems {
-    if (selectedCategory == '전체') return items;
-    return items.where((it) => _categoryOf(it) == selectedCategory).toList();
+  // ====== 현재 카테고리에서 "가능한 속성태그" 계산 ======
+  // (selectedCategory 반영 + 태그가 실제 품목명에 존재하는지)
+  Set<String> _availableAttributesForCategory() {
+    final base = items.where((it) {
+      return selectedCategory == '전체' || _categoryOf(it) == selectedCategory;
+    }).toList();
+
+    final avail = <String>{};
+    for (final tag in attributeTags) {
+      if (base.any((it) => it.name.contains(tag))) {
+        avail.add(tag);
+      }
+    }
+    return avail;
   }
 
-  String _yyyyMMdd(DateTime d) {
-    final y = d.year.toString().padLeft(4, '0');
-    final m = d.month.toString().padLeft(2, '0');
-    final day = d.day.toString().padLeft(2, '0');
-    return '$y$m$day';
+  // ====== 필터 적용: 카테고리 + 선택된 속성(모두 포함) ======
+  List<ProductItem> _applyFilters({Set<String>? attrsOverride}) {
+    final attrs = attrsOverride ?? selectedAttributes;
+    return items.where((it) {
+      final categoryMatch = selectedCategory == '전체' || _categoryOf(it) == selectedCategory;
+      if (!categoryMatch) return false;
+
+      for (final tag in attrs) {
+        if (!it.name.contains(tag)) return false;
+      }
+      return true;
+    }).toList();
   }
 
-  String _dateText(DateTime d) {
-    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  List<ProductItem> get _filteredItems => _applyFilters();
+
+  // ====== "필터로 인해 품목 0개" 방지 안전장치 ======
+  // - 카테고리 변경/태그 변경 시 호출
+  void _normalizeFiltersAfterChange() {
+    // 1) 현재 카테고리에서 불가능한 속성은 자동 해제
+    final avail = _availableAttributesForCategory();
+    selectedAttributes.removeWhere((t) => !avail.contains(t));
+
+    // 2) 그래도 0개면, 선택된 속성들을 하나씩 풀어서 복구
+    var list = _applyFilters();
+    if (list.isEmpty && selectedAttributes.isNotEmpty) {
+      final tags = selectedAttributes.toList();
+      // 마지막에 선택한 순서까지 알 수 없으니, 일단 뒤에서부터 제거
+      for (int i = tags.length - 1; i >= 0; i--) {
+        selectedAttributes.remove(tags[i]);
+        list = _applyFilters();
+        if (list.isNotEmpty) break;
+      }
+    }
+
+    // 3) 선택 품목이 현재 리스트 밖이면 해제
+    final current = _applyFilters();
+    if (selectedItem != null && !current.contains(selectedItem)) {
+      selectedItem = null;
+    }
   }
 
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
+  // ====== 날짜 ======
   Future<void> pickDate() async {
     final now = DateTime.now();
     final picked = await showDatePicker(
@@ -142,10 +176,29 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
     if (picked != null) setState(() => producedAt = picked);
   }
 
-  // ✅ 1~99: 두자리 다이얼 (십의 자리 / 일의 자리) — 라벨(십/일) 없음
-  Future<void> _pickQtyTwoDial() async {
-    int tens = (qty == 100 ? 9 : (qty ~/ 10)).clamp(0, 9);
-    int ones = (qty == 100 ? 9 : (qty % 10)).clamp(0, 9);
+  String _yyyyMMdd(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y$m$day';
+  }
+
+  String _yyyyMmDdText(DateTime d) {
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  }
+
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ====== 수량: 1~99 두 휠 ======
+  Future<void> _pickQtyTwoWheel() async {
+    int current = qty;
+    if (current == 100) current = 99;
+    current = current.clamp(1, 99);
+
+    int tens = current ~/ 10;
+    int ones = current % 10;
 
     await showModalBottomSheet(
       context: context,
@@ -153,7 +206,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
       builder: (_) {
         return SafeArea(
           child: SizedBox(
-            height: 320,
+            height: 340,
             child: Column(
               children: [
                 const SizedBox(height: 10),
@@ -172,7 +225,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
                             return Center(
                               child: Text(
                                 i.toString(),
-                                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+                                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
                               ),
                             );
                           }),
@@ -187,7 +240,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
                             return Center(
                               child: Text(
                                 i.toString(),
-                                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+                                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
                               ),
                             );
                           }),
@@ -212,7 +265,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
                         child: FilledButton(
                           onPressed: () {
                             int v = tens * 10 + ones;
-                            if (v == 0) v = 1; // 00이면 01로 보정
+                            if (v == 0) v = 1;
                             if (v > 99) v = 99;
                             setState(() => qty = v);
                             Navigator.pop(context);
@@ -231,6 +284,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
     );
   }
 
+  // ====== QR 생성 ======
   void generateQr() {
     final producer = (selectedProducer ?? '').trim();
     final item = selectedItem;
@@ -243,8 +297,8 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
       _toast('품목을 선택하세요.');
       return;
     }
-    if (qty < 1 || qty > 100) {
-      _toast('수량은 1~100만 가능합니다.');
+    if (!(qty == 100 || (qty >= 1 && qty <= 99))) {
+      _toast('수량은 1~99 또는 100(Pack)만 가능합니다.');
       return;
     }
 
@@ -274,12 +328,13 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
     setState(() {
       selectedProducer = null;
       selectedCategory = '전체';
+      selectedAttributes.clear();
       selectedItem = null;
-      producedAt = DateTime.now(); // ✅ 리셋 시에도 오늘
+      producedAt = DateTime.now();
       batchId = null;
       qrData = null;
       dailySerial = 1;
-      qty = 100;
+      qty = 100; // ✅ 기본 100 복원
     });
   }
 
@@ -320,87 +375,148 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
       ),
     );
 
-    await Printing.layoutPdf(
-      onLayout: (PdfPageFormat format) async => doc.save(),
-    );
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => doc.save());
   }
 
-  // =========================
-  // ✅ 공통 폼(모바일/웹에서 재사용)
-  // =========================
-  Widget _buildFormContent() {
-    // ✅ 카테고리 바꾸면 선택 품목이 필터 밖이면 자동 해제
-    final currentList = _filteredItems;
-    if (selectedItem != null && !currentList.contains(selectedItem)) {
-      selectedItem = null;
-    }
+  // ====== UI 빌더(입력폼 파트) ======
+  Widget _buildFormContent(bool isWebWide) {
+    final availAttrs = _availableAttributesForCategory();
+
+    // 현재 필터 리스트 기준으로 드롭다운 구성
+    final list = _filteredItems;
 
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        const Text('필수 입력', style: TextStyle(fontWeight: FontWeight.w800)),
+        const Text('필수 입력', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 10),
 
-        // ✅ 생산자 칩 (간격 촘촘하게)
+        // 생산자
         const Text('생산자 선택 *', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 6,     // ✅ 간격 줄임
-          runSpacing: 6,  // ✅ 간격 줄임
+          spacing: 6,
+          runSpacing: 6,
           children: producers.map((p) {
             final isSelected = selectedProducer == p;
             return ChoiceChip(
-              label: Text(p),
+              label: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                child: Text(p, style: const TextStyle(fontWeight: FontWeight.w800)),
+              ),
               selected: isSelected,
               onSelected: (_) => setState(() => selectedProducer = p),
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
-              labelPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             );
           }).toList(),
         ),
 
         const SizedBox(height: 12),
 
-        // ✅ 생산일자: 기본 오늘, 누르면 달력으로 변경
+        // 날짜
         OutlinedButton.icon(
           onPressed: pickDate,
           icon: const Icon(Icons.calendar_month_outlined),
-          label: Text(_dateText(producedAt)),
+          label: Text('생산일자: ${_yyyyMmDdText(producedAt)} (변경)'),
         ),
 
         const SizedBox(height: 12),
 
-        // ✅ 카테고리: "가로 2열" 느낌(두 줄로 wrap) + 칩 크게
+        // 카테고리: 2열
         const Text('품목 카테고리', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
+        LayoutBuilder(
+          builder: (context, c) {
+            final w = c.maxWidth;
+            final itemW = (w - 6) / 2;
+            return Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: categories.map((cat) {
+                final selected = selectedCategory == cat;
+                return SizedBox(
+                  width: itemW,
+                  child: ChoiceChip(
+                    label: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Center(
+                        child: Text(
+                          cat,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                    selected: selected,
+                    onSelected: (_) {
+                      setState(() {
+                        selectedCategory = cat;
+                        _normalizeFiltersAfterChange();
+                      });
+                    },
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
+                  ),
+                );
+              }).toList(),
+            );
+          },
+        ),
+
+        const SizedBox(height: 12),
+
+        // 속성 태그: 불가능한 것은 비활성/자동해제
+        const Text('속성 필터', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
         Wrap(
-          spacing: 6,     // ✅ 칩 사이 간격 줄임
-          runSpacing: 6,  // ✅ 줄 간격 줄임 (두 줄로 자연스럽게 감김)
-          children: categories.map((c) {
-            final selected = selectedCategory == c;
-            return ChoiceChip(
-              label: Text(c, overflow: TextOverflow.ellipsis),
-              selected: selected,
-              onSelected: (_) => setState(() => selectedCategory = c),
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
-              labelPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          spacing: 6,
+          runSpacing: 6,
+          children: attributeTags.map((tag) {
+            final enabled = availAttrs.contains(tag);
+            final selected = selectedAttributes.contains(tag);
+
+            // enabled=false면 선택도 못하게(그리고 이미 선택되어있으면 normalize에서 제거됨)
+            return Opacity(
+              opacity: enabled ? 1.0 : 0.35,
+              child: FilterChip(
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  child: Text(tag, style: const TextStyle(fontWeight: FontWeight.w800)),
+                ),
+                selected: selected,
+                onSelected: enabled
+                    ? (v) {
+                  setState(() {
+                    if (v) {
+                      selectedAttributes.add(tag);
+                    } else {
+                      selectedAttributes.remove(tag);
+                    }
+                    _normalizeFiltersAfterChange();
+                  });
+                }
+                    : null,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
+              ),
             );
           }).toList(),
         ),
 
         const SizedBox(height: 12),
 
-        // ✅ 품목 드롭다운(필터 적용)
+        // 품목 선택
         DropdownButtonFormField<ProductItem>(
           value: selectedItem,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: '품목 선택 *',
-            border: OutlineInputBorder(),
+            border: const OutlineInputBorder(),
+            helperText: list.isEmpty ? '필터 조합으로 선택 가능한 품목이 없습니다. (필터가 자동 조정됩니다)' : null,
           ),
           isExpanded: true,
-          items: _filteredItems.map((it) {
+          items: list.map((it) {
             return DropdownMenuItem<ProductItem>(
               value: it,
               child: Text('${it.name}   (${it.sku})'),
@@ -411,28 +527,31 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
 
         const SizedBox(height: 12),
 
-        // ✅ 수량 선택: 100(Pack) 기본 + 100미만(1~99) 두자리 다이얼
-        const Text('수량 (최대 100)', style: TextStyle(fontWeight: FontWeight.w700)),
+        // 수량: 100 기본 + 1~99 다이얼
+        const Text('수량', style: TextStyle(fontWeight: FontWeight.w700)),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 6,
-          runSpacing: 6,
+          spacing: 8,
+          runSpacing: 8,
           children: [
             ChoiceChip(
-              label: const Text('100 (Pack)'),
+              label: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                child: Text('100 (Pack)', style: TextStyle(fontWeight: FontWeight.w900)),
+              ),
               selected: qty == 100,
               onSelected: (_) => setState(() => qty = 100),
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
-              labelPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             ),
             ChoiceChip(
-              label: Text(qty == 100 ? '100 미만 선택' : '선택됨: ${qty.toString().padLeft(2, '0')}'),
+              label: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                child: Text(
+                  qty == 100 ? '1~99 선택' : '선택됨: ${qty.toString().padLeft(2, '0')}',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
               selected: qty != 100,
-              onSelected: (_) async => _pickQtyTwoDial(),
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: const VisualDensity(horizontal: -2, vertical: -2),
-              labelPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              onSelected: (_) async => _pickQtyTwoWheel(),
             ),
           ],
         ),
@@ -445,105 +564,104 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> {
           label: const Text('QR 생성'),
         ),
 
-        const SizedBox(height: 18),
-        const Divider(),
-
-        if (qrData == null) ...[
+        if (!isWebWide) ...[
           const SizedBox(height: 18),
-          const Center(child: Text('선택 후 [QR 생성]을 누르면 QR이 표시됩니다.')),
+          const Divider(),
+          _buildPreviewBlock(),
         ],
       ],
     );
   }
 
-  // ✅ QR 패널(웹 우측 / 모바일 하단에 활용)
-  Widget _buildQrPanel() {
+  // ====== UI 빌더(미리보기 파트) ======
+  Widget _buildPreviewBlock() {
     if (qrData == null) {
-      return const Center(child: Text('아직 생성된 QR이 없습니다.'));
+      return const Padding(
+        padding: EdgeInsets.only(top: 12),
+        child: Center(child: Text('선택 후 [QR 생성]을 누르면 QR이 표시됩니다.')),
+      );
     }
 
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('생성된 Batch: $batchId', style: const TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 10),
-              Center(
-                child: QrImageView(
-                  data: qrData!,
-                  version: QrVersions.auto,
-                  size: 260,
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Text('QR 내부 데이터(JSON)', style: TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 6),
-              SelectableText(qrData!),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: printQr,
-                icon: const Icon(Icons.print),
-                label: const Text('QR 인쇄'),
-              ),
-            ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 8),
+        Text('생성된 Batch: $batchId', style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 12),
+        Center(
+          child: QrImageView(
+            data: qrData!,
+            version: QrVersions.auto,
+            size: 260,
           ),
         ),
-      ),
+        const SizedBox(height: 12),
+        const Text('QR 내부 데이터(JSON)', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 6),
+        SelectableText(qrData!),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: printQr,
+          icon: const Icon(Icons.print),
+          label: const Text('QR 인쇄'),
+        ),
+      ],
     );
   }
 
-  // =========================
-  // ✅ 웹/모바일 UI 분기(한 파일에서)
-  // =========================
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('제품 등록 → QR 생성'),
-        actions: [
-          IconButton(
-            onPressed: resetForm,
-            icon: const Icon(Icons.refresh),
-            tooltip: '초기화',
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final w = constraints.maxWidth;
+    // 빌드마다 필터/선택 정합성 유지 (카테고리/태그 변경 누락 방지)
+    _normalizeFiltersAfterChange();
 
-          // ✅ WEB/DESKTOP: 좌(폼) / 우(QR) 2컬럼
-          if (w >= 900) {
-            return Row(
-              children: [
-                SizedBox(
-                  width: 520,
-                  child: _buildFormContent(),
-                ),
-                const VerticalDivider(width: 1),
-                Expanded(
-                  child: _buildQrPanel(),
-                ),
-              ],
-            );
-          }
+    return LayoutBuilder(
+      builder: (context, c) {
+        final isWebWide = c.maxWidth >= 900;
 
-          // ✅ MOBILE/TABLET: 폼 아래에 QR 패널
-          return Column(
-            children: [
-              Expanded(child: _buildFormContent()),
-              SizedBox(
-                height: 360,
-                child: _buildQrPanel(),
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('제품 등록 → QR 생성'),
+            actions: [
+              IconButton(
+                onPressed: resetForm,
+                icon: const Icon(Icons.refresh),
+                tooltip: '초기화',
               ),
             ],
-          );
-        },
-      ),
+          ),
+          body: SafeArea(
+            child: isWebWide
+                ? Row(
+              children: [
+                // 좌: 입력
+                Expanded(
+                  flex: 6,
+                  child: _buildFormContent(true),
+                ),
+                const VerticalDivider(width: 1),
+                // 우: 미리보기(고정)
+                Expanded(
+                  flex: 5,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      const Text('미리보기', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 12),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: _buildPreviewBlock(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            )
+                : _buildFormContent(false),
+          ),
+        );
+      },
     );
   }
 }
