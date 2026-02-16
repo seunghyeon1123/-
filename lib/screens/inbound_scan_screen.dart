@@ -39,18 +39,27 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
   }
 
   Future<void> sendInboundToGoogleSheet(Map<String, dynamic> inbound) async {
+    const url = 'https://script.google.com/macros/s/AKfycbw81rMmPPn6prQbxskqP5jG6orZithi8giJY44jLPfnHNC-5eREKiXZrJm-Ib-A/exec';
+
     final res = await http.post(
-      Uri.parse(sheetUrl),
+      Uri.parse(url),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(inbound),
     );
 
-    // Apps Script는 302/200 등 다양하게 올 수 있어서
-    // MVP에서는 200대 아니면 실패로 처리
-    if (res.statusCode < 200 || res.statusCode >= 300) {
+    if (res.statusCode != 200) {
       throw Exception('Sheet 전송 실패: ${res.statusCode} / ${res.body}');
     }
+
+    final body = (res.body).trim();
+    if (body == 'DUPLICATE') {
+      throw Exception('이미 입고된 Batch 입니다. (중복 입고 차단)');
+    }
+    if (body != 'OK') {
+      throw Exception('Sheet 응답 오류: $body');
+    }
   }
+
 
   Future<void> onDetect(BarcodeCapture capture) async {
     if (isProcessing) return;
