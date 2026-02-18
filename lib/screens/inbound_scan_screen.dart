@@ -21,7 +21,7 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
 
   // ✅ 너의 Apps Script URL (네가 쓰던 것)
   static const String sheetUrl =
-      'https://script.google.com/macros/s/AKfycbxRO0zYqYdz6Wvuk1mTHzWSwSFhsE3BcTqtk8A9-tZU3fmJZB-EWoPScBTuMCwWfQ/exec';
+      'https://script.google.com/macros/s/AKfycbxVJ4LK4nPshGHo7bl2BUiUtzWhoDihyJgVO0u2_3BUBtJhzBkxImQJmnqZMd3jVXA/exec';
 
   void _toast(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -39,26 +39,43 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
   }
 
   Future<void> sendInboundToGoogleSheet(Map<String, dynamic> inbound) async {
-    const url = 'https://script.google.com/macros/s/AKfycbw81rMmPPn6prQbxskqP5jG6orZithi8giJY44jLPfnHNC-5eREKiXZrJm-Ib-A/exec';
+    const url = 'https://script.google.com/macros/s/AKfycbxVJ4LK4nPshGHo7bl2BUiUtzWhoDihyJgVO0u2_3BUBtJhzBkxImQJmnqZMd3jVXA/exec';
 
-    final res = await http.post(
-      Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(inbound),
-    );
+    final client = http.Client();
+    try {
+      Future<http.Response> postOnce(Uri u) async {
+        final req = http.Request('POST', u)
+          ..followRedirects = false // 우리가 직접 처리
+          ..headers['Content-Type'] = 'application/json'
+          ..body = jsonEncode(inbound);
 
-    if (res.statusCode != 200) {
-      throw Exception('Sheet 전송 실패: ${res.statusCode} / ${res.body}');
-    }
+        final streamed = await client.send(req).timeout(const Duration(seconds: 20));
+        return http.Response.fromStream(streamed);
+      }
 
-    final body = (res.body).trim();
-    if (body == 'DUPLICATE') {
-      throw Exception('이미 입고된 Batch 입니다. (중복 입고 차단)');
-    }
-    if (body != 'OK') {
-      throw Exception('Sheet 응답 오류: $body');
+      // 1차 요청
+      var res = await postOnce(Uri.parse(url));
+
+      // 리다이렉트면 Location으로 1번 더 POST
+      if (res.isRedirect || res.statusCode == 302 || res.statusCode == 303) {
+        final loc = res.headers['location'];
+        if (loc == null) {
+          throw Exception('Sheet 리다이렉트인데 location 헤더가 없음: ${res.statusCode}');
+        }
+        res = await postOnce(Uri.parse(loc));
+      }
+
+      if (res.statusCode != 200) {
+        final preview = res.body.length > 200 ? res.body.substring(0, 200) : res.body;
+        throw Exception('Sheet 전송 실패: ${res.statusCode} / $preview');
+      }
+
+      // 필요하면 서버가 {"ok":true} 같은 JSON을 주도록 해서 여기서 체크 가능
+    } finally {
+      client.close();
     }
   }
+
 
 
   Future<void> onDetect(BarcodeCapture capture) async {
