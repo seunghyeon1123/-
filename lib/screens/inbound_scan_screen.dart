@@ -13,7 +13,7 @@ class InboundScanScreen extends StatefulWidget {
 class _InboundScanScreenState extends State<InboundScanScreen> {
   // ✅ Apps Script 웹앱 /exec URL
   static const String WEBAPP_URL =
-      'https://script.google.com/macros/s/AKfycbypDXUldmNlZZ8CowNirG3j3g6GavSetT3P6_ZaTWCzYmxrJaNjoIOyr2S0uNWQS78/exec';
+      'https://script.google.com/macros/s/AKfycbzu-6JzH2GFpWFgrihJv89SVxesTo_MX7b9PPdeFM57jjAUPQ5DKmp4Zu4yTfoC-j8/exec';
 
   final MobileScannerController controller = MobileScannerController();
 
