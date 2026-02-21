@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'screens/product_qr_create_screen.dart';
 import 'screens/location_qr_create_screen.dart';
-import 'screens/inbound_scan_screen.dart'; // ✅ 입고(스캔) 화면
+import 'screens/inbound_scan_screen.dart';
+import 'screens/inventory_screen.dart'; // ✅ 추가
 
 void main() {
   runApp(const App());
@@ -25,7 +26,7 @@ class HomeTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3, // ✅ 탭 3개
+      length: 4, // ✅ 3 → 4
       child: Scaffold(
         appBar: AppBar(
           title: const Text('재고관리 (MVP)'),
@@ -41,7 +42,11 @@ class HomeTabs extends StatelessWidget {
               ),
               Tab(
                 icon: Icon(Icons.qr_code_scanner),
-                text: '입고(스캔)', // ✅ 이 탭이 중요
+                text: '입고(스캔)',
+              ),
+              Tab(
+                icon: Icon(Icons.list_alt),
+                text: '재고조회', // ✅ 추가
               ),
             ],
           ),
@@ -50,7 +55,8 @@ class HomeTabs extends StatelessWidget {
           children: [
             ProductQrCreateScreen(),
             LocationQrCreateScreen(),
-            InboundScanScreen(), // ✅ 여기 반드시 있어야 함
+            InboundScanScreen(),
+            InventoryScreen(), // ✅ 추가
           ],
         ),
       ),
