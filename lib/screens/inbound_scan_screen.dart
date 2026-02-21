@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:http/http.dart' as http;
+import '../config.dart';
 
 class InboundScanScreen extends StatefulWidget {
   const InboundScanScreen({super.key});
@@ -12,8 +13,7 @@ class InboundScanScreen extends StatefulWidget {
 
 class _InboundScanScreenState extends State<InboundScanScreen> {
   // ✅ Apps Script 웹앱 /exec URL
-  static const String WEBAPP_URL =
-      'https://script.google.com/macros/s/AKfycbzu-6JzH2GFpWFgrihJv89SVxesTo_MX7b9PPdeFM57jjAUPQ5DKmp4Zu4yTfoC-j8/exec';
+  static const String WEBAPP_URL =AppConfig.webAppUrl;
 
   final MobileScannerController controller = MobileScannerController();
 
@@ -225,6 +225,7 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       };
 
       final resp = await _postJsonWithRedirect(inbound);
+      debugPrint('INBOUND resp: $resp');
 
       final ok = resp["ok"] == true;
       if (!ok) {

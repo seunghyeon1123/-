@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../config.dart';
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -10,8 +11,7 @@ class InventoryScreen extends StatefulWidget {
 }
 
 class _InventoryScreenState extends State<InventoryScreen> {
-  static const String WEBAPP_URL =
-      'https://script.google.com/macros/s/AKfycbzu-6JzH2GFpWFgrihJv89SVxesTo_MX7b9PPdeFM57jjAUPQ5DKmp4Zu4yTfoC-j8/exec';
+  static const String WEBAPP_URL = AppConfig.webAppUrl;
 
   bool loading = false;
   String? error;
@@ -26,6 +26,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
   // ✅ 페이지 크기
   int rowsPerPage = 20;
 
+  // ✅ 마지막 갱신 시간(“업데이트 안됨” 체감 확인용)
+  DateTime? lastFetchedAt;
+
   late final _InventoryDataSource dataSource;
 
   @override
@@ -35,7 +38,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     load();
   }
 
-  // ---------- Helpers ----------
+  // ---------- Helpers (State용) ----------
   String s(Map<String, dynamic> it, String key, [String fallback = '-']) {
     final v = it[key];
     if (v == null) return fallback;
@@ -43,11 +46,22 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return str.isEmpty ? fallback : str;
   }
 
-  num n(Map<String, dynamic> it, String key) {
+  num? _tryNum(Map<String, dynamic> it, String key) {
     final v = it[key];
+    if (v == null) return null;
     if (v is num) return v;
-    if (v == null) return 0;
-    return num.tryParse(v.toString()) ?? 0;
+
+    final str = v.toString().replaceAll(',', '').trim(); // ✅ "1,200" 방어
+    if (str.isEmpty) return null;
+    return num.tryParse(str);
+  }
+
+  num pickNum(Map<String, dynamic> it, List<String> keys) {
+    for (final k in keys) {
+      final parsed = _tryNum(it, k);
+      if (parsed != null) return parsed;
+    }
+    return 0;
   }
 
   List<Map<String, dynamic>> _filteredBase() {
@@ -95,17 +109,17 @@ class _InventoryScreenState extends State<InventoryScreen> {
             return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
           });
           break;
-        case 4: // 수량
+        case 4: // 수량 (qty / qtyTotal 자동 대응)
           view.sort((a, b) {
-            final av = n(a, 'qty');
-            final bv = n(b, 'qty');
+            final av = pickNum(a, ['qty', 'qtyTotal']);
+            final bv = pickNum(b, ['qty', 'qtyTotal']);
             return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
           });
           break;
-        case 5: // 총 무게(kg)
+        case 5: // 총 무게(kg) (weightKgTotal / weightKg 자동 대응)
           view.sort((a, b) {
-            final av = n(a, 'weightKgTotal');
-            final bv = n(b, 'weightKgTotal');
+            final av = pickNum(a, ['weightKgTotal', 'weightKg']);
+            final bv = pickNum(b, ['weightKgTotal', 'weightKg']);
             return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
           });
           break;
@@ -123,12 +137,18 @@ class _InventoryScreenState extends State<InventoryScreen> {
     });
 
     try {
-      final uri = Uri.parse('$WEBAPP_URL?action=inventory');
+      // ✅ 캐시 방지: ts 파라미터만 사용(웹에서 가장 안전)
+      final uri = Uri.parse(
+        '$WEBAPP_URL?action=inventory&ts=${DateTime.now().millisecondsSinceEpoch}',
+      );
+
       final res = await http.get(uri).timeout(const Duration(seconds: 15));
 
       if (res.statusCode != 200) {
         throw Exception('HTTP ${res.statusCode}');
       }
+      debugPrint('CT=${res.headers['content-type']}');
+      debugPrint(res.body.substring(0, 80));
 
       final decoded = jsonDecode(res.body);
       if (decoded is! Map) throw Exception('JSON 형식 아님');
@@ -143,7 +163,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
           .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
           .toList();
 
-      items = parsed;
+      setState(() {
+        items = parsed;
+        lastFetchedAt = DateTime.now();
+      });
+
+      if (parsed.isNotEmpty) {
+        debugPrint('INVENTORY keys: ${parsed.first.keys.toList()}');
+        debugPrint('INVENTORY first row: ${parsed.first}');
+      }
+
       _applyFilterAndSort();
     } catch (e) {
       setState(() => error = e.toString());
@@ -160,10 +189,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
     _applyFilterAndSort();
   }
 
+  String _fmtTime(DateTime? t) {
+    if (t == null) return '-';
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    final ss = t.second.toString().padLeft(2, '0');
+    return '$hh:$mm:$ss';
+  }
+
   @override
   Widget build(BuildContext context) {
-
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('재고현황(표)'),
@@ -172,6 +207,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
         ],
       ),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
@@ -185,6 +221,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 setState(() => q = v);
                 _applyFilterAndSort();
               },
+            ),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Text(
+              '마지막 갱신: ${_fmtTime(lastFetchedAt)}   |   표시: ${dataSource.rowCount}건',
+              style: TextStyle(color: Colors.black.withOpacity(0.65)),
             ),
           ),
 
@@ -209,7 +253,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ),
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        // ✅ 핵심: PaginatedDataTable에 '유한한 width'를 줌 (무한대 방지)
                         final double tableWidth =
                         constraints.maxWidth < 980 ? 980 : constraints.maxWidth;
 
@@ -218,7 +261,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           child: SizedBox(
                             width: tableWidth,
                             child: PaginatedDataTable(
-
                               header: Text('표시 ${dataSource.rowCount}건'),
                               rowsPerPage: rowsPerPage,
                               availableRowsPerPage: const [10, 20, 50, 100],
@@ -231,29 +273,35 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               sortAscending: sortAscending,
                               columns: [
                                 DataColumn(
-                                  label: const Text('SKU', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('SKU',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                                 DataColumn(
-                                  label: const Text('품목명', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('품목명',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                                 DataColumn(
-                                  label: const Text('창고', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('창고',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                                 DataColumn(
-                                  label: const Text('위치코드', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('위치코드',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                                 DataColumn(
                                   numeric: true,
-                                  label: const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('수량',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                                 DataColumn(
                                   numeric: true,
-                                  label: const Text('총 무게(kg)', style: TextStyle(fontWeight: FontWeight.w800)),
+                                  label: const Text('총 무게(kg)',
+                                      style: TextStyle(fontWeight: FontWeight.w800)),
                                   onSort: _onSort,
                                 ),
                               ],
@@ -262,7 +310,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           ),
                         );
                       },
-                    )
+                    ),
                   ),
                 ),
               ),
@@ -290,11 +338,22 @@ class _InventoryDataSource extends DataTableSource {
     return str.isEmpty ? fallback : str;
   }
 
-  num _n(Map<String, dynamic> it, String key) {
+  num? _tryNum(Map<String, dynamic> it, String key) {
     final v = it[key];
+    if (v == null) return null;
     if (v is num) return v;
-    if (v == null) return 0;
-    return num.tryParse(v.toString()) ?? 0;
+
+    final str = v.toString().replaceAll(',', '').trim();
+    if (str.isEmpty) return null;
+    return num.tryParse(str);
+  }
+
+  num _pickNum(Map<String, dynamic> it, List<String> keys) {
+    for (final k in keys) {
+      final parsed = _tryNum(it, k);
+      if (parsed != null) return parsed;
+    }
+    return 0;
   }
 
   @override
@@ -306,8 +365,10 @@ class _InventoryDataSource extends DataTableSource {
     final name = _s(it, 'name', '-');
     final wh = _s(it, 'warehouse', '-');
     final loc = _s(it, 'locationCode', '-');
-    final qty = _n(it, 'qty');
-    final wkg = _n(it, 'weightKgTotal');
+
+    // ✅ 서버 키가 뭐든 자동으로 잡음
+    final qty = _pickNum(it, ['qty', 'qtyTotal']);
+    final wkg = _pickNum(it, ['weightKgTotal', 'weightKg']);
 
     return DataRow.byIndex(
       index: index,
