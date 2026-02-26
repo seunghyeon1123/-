@@ -148,7 +148,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
         throw Exception('HTTP ${res.statusCode}');
       }
       debugPrint('CT=${res.headers['content-type']}');
-      debugPrint(res.body.substring(0, 80));
+      final previewLen = res.body.length < 80 ? res.body.length : 80;
+      debugPrint(res.body.substring(0, previewLen));
 
       final decoded = jsonDecode(res.body);
       if (decoded is! Map) throw Exception('JSON 형식 아님');
@@ -257,14 +258,15 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         constraints.maxWidth < 980 ? 980 : constraints.maxWidth;
 
                         return SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: SizedBox(
-                            width: tableWidth,
-                            child: PaginatedDataTable(
-                              header: Text('표시 ${dataSource.rowCount}건'),
-                              rowsPerPage: rowsPerPage,
-                              availableRowsPerPage: const [10, 20, 50, 100],
-                              onRowsPerPageChanged: (v) {
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: SizedBox(
+                                width: tableWidth,
+                                child: PaginatedDataTable(
+                                  header: Text('표시 ${dataSource.rowCount}건'),
+                                  rowsPerPage: rowsPerPage,
+                                  availableRowsPerPage: const [10, 20, 50, 100],
+                                  onRowsPerPageChanged: (v) {
                                 if (v == null) return;
                                 setState(() => rowsPerPage = v);
                               },
@@ -308,6 +310,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               source: dataSource,
                             ),
                           ),
+                            ),
                         );
                       },
                     ),
@@ -330,7 +333,9 @@ class _InventoryDataSource extends DataTableSource {
     _rows = next;
     notifyListeners();
   }
-
+  String _fmtKg(num v) {
+    return v.toDouble().toStringAsFixed(2);
+  }
   String _s(Map<String, dynamic> it, String key, [String fallback = '-']) {
     final v = it[key];
     if (v == null) return fallback;
@@ -378,7 +383,7 @@ class _InventoryDataSource extends DataTableSource {
         DataCell(Text(wh)),
         DataCell(SelectableText(loc)),
         DataCell(Text(qty.toString())),
-        DataCell(Text(wkg.toString())),
+        DataCell(Text(_fmtKg(wkg))),
       ],
     );
   }
