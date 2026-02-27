@@ -1,5 +1,3 @@
-// lib/models/product_catalog.dart
-
 class ProductItem {
   final String name;
   final String sku;
@@ -14,16 +12,12 @@ class ProductItem {
   });
 }
 
-// 상위 카테고리 목록
 const List<String> productCategories = ['전체', '대발', '배접', '2.7/3.6/120', '옻지', '인쇄/나염', '기타'];
-
-// 전체 속성 목록
 const List<String> allProductAttrs = ['순지', '국내', '백닥', '무표백', '황촉규', '無', '색', '옻'];
 
-// 기존 product_qr_create_screen.dart에 있던 49개 품목 리스트
 const List<ProductItem> catalogItems = [
-  ProductItem(name: '배접지(140*80)', sku: 'HJ-BJ-140x80', category: '배접', attrs: {}),
-  ProductItem(name: '순지 배접지(140*80)', sku: 'HJ-BJ-SJ-140x80', category: '배접', attrs: {'순지'}),
+  ProductItem(name: '배접지', sku: 'HJ-BJ-140x80', category: '배접', attrs: {}),
+  ProductItem(name: '순지 배접지', sku: 'HJ-BJ-SJ-140x80', category: '배접', attrs: {'순지'}),
   ProductItem(name: '대발지', sku: 'HJ-DB', category: '대발', attrs: {}),
   ProductItem(name: '순지 대발', sku: 'HJ-DB-SJ', category: '대발', attrs: {'순지'}),
   ProductItem(name: '무표백 순지 대발', sku: 'HJ-DB-NB-SJ', category: '대발', attrs: {'무표백', '순지'}),
