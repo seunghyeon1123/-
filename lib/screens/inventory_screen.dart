@@ -1,7 +1,10 @@
+// lib/screens/inventory_screen.dart
+
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import '../models/product_catalog.dart'; // ✅ 공통 카탈로그 임포트
 
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -10,7 +13,11 @@ class InventoryScreen extends StatefulWidget {
   State<InventoryScreen> createState() => _InventoryScreenState();
 }
 
-class _InventoryScreenState extends State<InventoryScreen> {
+// ✅ with AutomaticKeepAliveClientMixin 추가
+class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true; // ✅ 추가
+
   static const String WEBAPP_URL = AppConfig.webAppUrl;
 
   bool loading = false;
@@ -19,26 +26,30 @@ class _InventoryScreenState extends State<InventoryScreen> {
   List<Map<String, dynamic>> items = [];
   String q = '';
 
+  // ✅ 필터 상태
+  List<String> warehouses = ['전체']; // 서버에서 동적 추출
+  String selectedWarehouse = '전체';
+  String selectedCategory = '전체';
+  Set<String> selectedAttrs = {};
+
   // ✅ 정렬 상태
   int? sortColumnIndex;
   bool sortAscending = true;
-
-  // ✅ 페이지 크기
   int rowsPerPage = 20;
-
-  // ✅ 마지막 갱신 시간(“업데이트 안됨” 체감 확인용)
   DateTime? lastFetchedAt;
 
   late final _InventoryDataSource dataSource;
+  late final Map<String, ProductItem> _catalogMap;
 
   @override
   void initState() {
     super.initState();
     dataSource = _InventoryDataSource([]);
+    _catalogMap = {for (var item in catalogItems) item.sku: item};
     load();
   }
 
-  // ---------- Helpers (State용) ----------
+  // ---------- Helpers ----------
   String s(Map<String, dynamic> it, String key, [String fallback = '-']) {
     final v = it[key];
     if (v == null) return fallback;
@@ -50,8 +61,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final v = it[key];
     if (v == null) return null;
     if (v is num) return v;
-
-    final str = v.toString().replaceAll(',', '').trim(); // ✅ "1,200" 방어
+    final str = v.toString().replaceAll(',', '').trim();
     if (str.isEmpty) return null;
     return num.tryParse(str);
   }
@@ -64,16 +74,40 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return 0;
   }
 
+  // ✅ 필터 적용 로직
   List<Map<String, dynamic>> _filteredBase() {
-    final t = q.trim().toLowerCase();
-    if (t.isEmpty) return [...items];
+    var view = items;
 
-    return items.where((it) {
-      return s(it, 'sku', '').toLowerCase().contains(t) ||
-          s(it, 'name', '').toLowerCase().contains(t) ||
-          s(it, 'locationCode', '').toLowerCase().contains(t) ||
-          s(it, 'warehouse', '').toLowerCase().contains(t);
-    }).toList();
+    // 1. 텍스트 검색
+    final t = q.trim().toLowerCase();
+    if (t.isNotEmpty) {
+      view = view.where((it) {
+        return s(it, 'sku', '').toLowerCase().contains(t) ||
+            s(it, 'name', '').toLowerCase().contains(t) ||
+            s(it, 'locationCode', '').toLowerCase().contains(t);
+      }).toList();
+    }
+
+    // 2. 창고 필터
+    if (selectedWarehouse != '전체') {
+      view = view.where((it) => s(it, 'warehouse', '') == selectedWarehouse).toList();
+    }
+
+    // 3. 카테고리 및 태그 필터
+    if (selectedCategory != '전체' || selectedAttrs.isNotEmpty) {
+      view = view.where((it) {
+        final sku = s(it, 'sku', '');
+        final meta = _catalogMap[sku];
+
+        if (meta == null) return false;
+        if (selectedCategory != '전체' && meta.category != selectedCategory) return false;
+        if (selectedAttrs.isNotEmpty && !selectedAttrs.every((a) => meta.attrs.contains(a))) return false;
+
+        return true;
+      }).toList();
+    }
+
+    return view;
   }
 
   void _applyFilterAndSort() {
@@ -81,45 +115,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
     if (sortColumnIndex != null) {
       switch (sortColumnIndex) {
-        case 0: // SKU
+        case 0: view.sort((a, b) => sortAscending ? s(a, 'sku', '').compareTo(s(b, 'sku', '')) : s(b, 'sku', '').compareTo(s(a, 'sku', ''))); break;
+        case 1: view.sort((a, b) => sortAscending ? s(a, 'name', '').compareTo(s(b, 'name', '')) : s(b, 'name', '').compareTo(s(a, 'name', ''))); break;
+        case 2: view.sort((a, b) => sortAscending ? s(a, 'warehouse', '').compareTo(s(b, 'warehouse', '')) : s(b, 'warehouse', '').compareTo(s(a, 'warehouse', ''))); break;
+        case 3: view.sort((a, b) => sortAscending ? s(a, 'locationCode', '').compareTo(s(b, 'locationCode', '')) : s(b, 'locationCode', '').compareTo(s(a, 'locationCode', ''))); break;
+        case 4: view.sort((a, b) => sortAscending ? pickNum(a, ['qty', 'qtyTotal']).compareTo(pickNum(b, ['qty', 'qtyTotal'])) : pickNum(b, ['qty', 'qtyTotal']).compareTo(pickNum(a, ['qty', 'qtyTotal']))); break;
+        case 5: view.sort((a, b) => sortAscending ? pickNum(a, ['weightKgTotal', 'weightKg']).compareTo(pickNum(b, ['weightKgTotal', 'weightKg'])) : pickNum(b, ['weightKgTotal', 'weightKg']).compareTo(pickNum(a, ['weightKgTotal', 'weightKg']))); break;
+        case 6: // ✅ 날짜(updatedAt) 정렬 추가
           view.sort((a, b) {
-            final av = s(a, 'sku', '');
-            final bv = s(b, 'sku', '');
-            return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
-          });
-          break;
-        case 1: // 품목명
-          view.sort((a, b) {
-            final av = s(a, 'name', '');
-            final bv = s(b, 'name', '');
-            return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
-          });
-          break;
-        case 2: // 창고
-          view.sort((a, b) {
-            final av = s(a, 'warehouse', '');
-            final bv = s(b, 'warehouse', '');
-            return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
-          });
-          break;
-        case 3: // 위치코드
-          view.sort((a, b) {
-            final av = s(a, 'locationCode', '');
-            final bv = s(b, 'locationCode', '');
-            return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
-          });
-          break;
-        case 4: // 수량 (qty / qtyTotal 자동 대응)
-          view.sort((a, b) {
-            final av = pickNum(a, ['qty', 'qtyTotal']);
-            final bv = pickNum(b, ['qty', 'qtyTotal']);
-            return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
-          });
-          break;
-        case 5: // 총 무게(kg) (weightKgTotal / weightKg 자동 대응)
-          view.sort((a, b) {
-            final av = pickNum(a, ['weightKgTotal', 'weightKg']);
-            final bv = pickNum(b, ['weightKgTotal', 'weightKg']);
+            final av = s(a, 'updatedAt', '');
+            final bv = s(b, 'updatedAt', '');
             return sortAscending ? av.compareTo(bv) : bv.compareTo(av);
           });
           break;
@@ -137,42 +142,29 @@ class _InventoryScreenState extends State<InventoryScreen> {
     });
 
     try {
-      // ✅ 캐시 방지: ts 파라미터만 사용(웹에서 가장 안전)
-      final uri = Uri.parse(
-        '$WEBAPP_URL?action=inventory&ts=${DateTime.now().millisecondsSinceEpoch}',
-      );
-
+      final uri = Uri.parse('$WEBAPP_URL?action=inventory&ts=${DateTime.now().millisecondsSinceEpoch}');
       final res = await http.get(uri).timeout(const Duration(seconds: 15));
 
-      if (res.statusCode != 200) {
-        throw Exception('HTTP ${res.statusCode}');
-      }
-      debugPrint('CT=${res.headers['content-type']}');
-      final previewLen = res.body.length < 80 ? res.body.length : 80;
-      debugPrint(res.body.substring(0, previewLen));
+      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
 
       final decoded = jsonDecode(res.body);
-      if (decoded is! Map) throw Exception('JSON 형식 아님');
-
-      if (decoded['ok'] != true) {
-        throw Exception(decoded['error']?.toString() ?? 'unknown');
-      }
+      if (decoded['ok'] != true) throw Exception(decoded['error']?.toString() ?? 'unknown');
 
       final list = (decoded['items'] as List?) ?? [];
-      final parsed = list
-          .whereType<Map>()
-          .map((e) => e.map((k, v) => MapEntry(k.toString(), v)))
-          .toList();
+      final parsed = list.whereType<Map>().map((e) => e.map((k, v) => MapEntry(k.toString(), v))).toList();
+
+      // 서버 데이터에서 존재하는 창고(Warehouse) 목록 자동 추출
+      final whSet = {'전체'};
+      for (var row in parsed) {
+        final w = s(row, 'warehouse', '');
+        if (w.isNotEmpty && w != '-') whSet.add(w);
+      }
 
       setState(() {
         items = parsed;
+        warehouses = whSet.toList();
         lastFetchedAt = DateTime.now();
       });
-
-      if (parsed.isNotEmpty) {
-        debugPrint('INVENTORY keys: ${parsed.first.keys.toList()}');
-        debugPrint('INVENTORY first row: ${parsed.first}');
-      }
 
       _applyFilterAndSort();
     } catch (e) {
@@ -192,17 +184,27 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   String _fmtTime(DateTime? t) {
     if (t == null) return '-';
-    final hh = t.hour.toString().padLeft(2, '0');
-    final mm = t.minute.toString().padLeft(2, '0');
-    final ss = t.second.toString().padLeft(2, '0');
-    return '$hh:$mm:$ss';
+    return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}:${t.second.toString().padLeft(2, '0')}';
+  }
+
+  void _toggleAttr(String a) {
+    setState(() {
+      if (selectedAttrs.contains(a)) {
+        selectedAttrs.remove(a);
+      } else {
+        selectedAttrs.add(a);
+      }
+    });
+    _applyFilterAndSort();
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
+    super.build(context); // ✅ 추가 (KeepAlive 동작을 위해 필수)
     return Scaffold(
       appBar: AppBar(
-        title: const Text('재고현황(표)'),
+        title: const Text('재고 현황(표)'),
         actions: [
           IconButton(onPressed: load, icon: const Icon(Icons.refresh)),
         ],
@@ -210,18 +212,72 @@ class _InventoryScreenState extends State<InventoryScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 1. 검색바
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
             child: TextField(
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.search),
-                hintText: 'SKU / 품목명 / 위치 검색',
+                hintText: 'SKU / 품목명 / 위치코드 검색',
                 border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(vertical: 0),
               ),
               onChanged: (v) {
                 setState(() => q = v);
                 _applyFilterAndSort();
               },
+            ),
+          ),
+
+          // 2. 상세 필터 패널 (접었다 펴기)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: ExpansionTile(
+              title: const Text('상세 필터 (창고 / 종류 / 태그)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+              childrenPadding: const EdgeInsets.only(bottom: 12),
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(labelText: '창고', border: OutlineInputBorder(), isDense: true),
+                        value: selectedWarehouse,
+                        items: warehouses.map((w) => DropdownMenuItem(value: w, child: Text(w))).toList(),
+                        onChanged: (v) {
+                          setState(() => selectedWarehouse = v!);
+                          _applyFilterAndSort();
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(labelText: '카테고리', border: OutlineInputBorder(), isDense: true),
+                        value: selectedCategory,
+                        items: productCategories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                        onChanged: (v) {
+                          setState(() => selectedCategory = v!);
+                          _applyFilterAndSort();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: allProductAttrs.map((a) {
+                    final selected = selectedAttrs.contains(a);
+                    return FilterChip(
+                      label: Text(a),
+                      selected: selected,
+                      onSelected: (_) => _toggleAttr(a),
+                      visualDensity: VisualDensity.compact,
+                    );
+                  }).toList(),
+                ),
+              ],
             ),
           ),
 
@@ -233,14 +289,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
             ),
           ),
 
+          // 3. 데이터 테이블
           if (loading)
             const Expanded(child: Center(child: CircularProgressIndicator()))
           else if (error != null)
-            Expanded(
-              child: Center(
-                child: Text('불러오기 실패\n$error', textAlign: TextAlign.center),
-              ),
-            )
+            Expanded(child: Center(child: Text('불러오기 실패\n$error', textAlign: TextAlign.center)))
           else
             Expanded(
               child: Padding(
@@ -248,69 +301,36 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.black12),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                    decoration: BoxDecoration(border: Border.all(color: Colors.black12), borderRadius: BorderRadius.circular(12)),
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        final double tableWidth =
-                        constraints.maxWidth < 980 ? 980 : constraints.maxWidth;
-
+                        final double tableWidth = constraints.maxWidth < 1000 ? 1000 : constraints.maxWidth;
                         return SingleChildScrollView(
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: SizedBox(
-                                width: tableWidth,
-                                child: PaginatedDataTable(
-                                  header: Text('표시 ${dataSource.rowCount}건'),
-                                  rowsPerPage: rowsPerPage,
-                                  availableRowsPerPage: const [10, 20, 50, 100],
-                                  onRowsPerPageChanged: (v) {
-                                if (v == null) return;
-                                setState(() => rowsPerPage = v);
-                              },
-                              showFirstLastButtons: true,
-                              sortColumnIndex: sortColumnIndex,
-                              sortAscending: sortAscending,
-                              columns: [
-                                DataColumn(
-                                  label: const Text('SKU',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                                DataColumn(
-                                  label: const Text('품목명',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                                DataColumn(
-                                  label: const Text('창고',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                                DataColumn(
-                                  label: const Text('위치코드',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                                DataColumn(
-                                  numeric: true,
-                                  label: const Text('수량',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                                DataColumn(
-                                  numeric: true,
-                                  label: const Text('총 무게(kg)',
-                                      style: TextStyle(fontWeight: FontWeight.w800)),
-                                  onSort: _onSort,
-                                ),
-                              ],
-                              source: dataSource,
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: SizedBox(
+                              width: tableWidth,
+                              child: PaginatedDataTable(
+                                rowsPerPage: rowsPerPage,
+                                availableRowsPerPage: const [10, 20, 50, 100],
+                                onRowsPerPageChanged: (v) {
+                                  if (v != null) setState(() => rowsPerPage = v);
+                                },
+                                sortColumnIndex: sortColumnIndex,
+                                sortAscending: sortAscending,
+                                columns: [
+                                  DataColumn(label: const Text('SKU', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(label: const Text('품목명', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(label: const Text('창고', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(label: const Text('위치코드', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(numeric: true, label: const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(numeric: true, label: const Text('총 무게(kg)', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(label: const Text('최근변동일', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), // ✅ 날짜 정렬 추가
+                                ],
+                                source: dataSource,
+                              ),
                             ),
                           ),
-                            ),
                         );
                       },
                     ),
@@ -326,16 +346,15 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
 class _InventoryDataSource extends DataTableSource {
   List<Map<String, dynamic>> _rows;
-
   _InventoryDataSource(this._rows);
 
   void update(List<Map<String, dynamic>> next) {
     _rows = next;
     notifyListeners();
   }
-  String _fmtKg(num v) {
-    return v.toDouble().toStringAsFixed(2);
-  }
+
+  String _fmtKg(num v) => v.toDouble().toStringAsFixed(2);
+
   String _s(Map<String, dynamic> it, String key, [String fallback = '-']) {
     final v = it[key];
     if (v == null) return fallback;
@@ -347,10 +366,8 @@ class _InventoryDataSource extends DataTableSource {
     final v = it[key];
     if (v == null) return null;
     if (v is num) return v;
-
     final str = v.toString().replaceAll(',', '').trim();
-    if (str.isEmpty) return null;
-    return num.tryParse(str);
+    return str.isEmpty ? null : num.tryParse(str);
   }
 
   num _pickNum(Map<String, dynamic> it, List<String> keys) {
@@ -359,6 +376,12 @@ class _InventoryDataSource extends DataTableSource {
       if (parsed != null) return parsed;
     }
     return 0;
+  }
+
+  String _formatDate(String isoStr) {
+    if (isoStr.isEmpty || isoStr == '-') return '-';
+    if (isoStr.length >= 10) return isoStr.substring(0, 10);
+    return isoStr;
   }
 
   @override
@@ -370,10 +393,9 @@ class _InventoryDataSource extends DataTableSource {
     final name = _s(it, 'name', '-');
     final wh = _s(it, 'warehouse', '-');
     final loc = _s(it, 'locationCode', '-');
-
-    // ✅ 서버 키가 뭐든 자동으로 잡음
     final qty = _pickNum(it, ['qty', 'qtyTotal']);
     final wkg = _pickNum(it, ['weightKgTotal', 'weightKg']);
+    final updatedAt = _formatDate(_s(it, 'updatedAt', '-'));
 
     return DataRow.byIndex(
       index: index,
@@ -384,16 +406,15 @@ class _InventoryDataSource extends DataTableSource {
         DataCell(SelectableText(loc)),
         DataCell(Text(qty.toString())),
         DataCell(Text(_fmtKg(wkg))),
+        DataCell(Text(updatedAt)), // ✅ 날짜 추가
       ],
     );
   }
 
   @override
   bool get isRowCountApproximate => false;
-
   @override
   int get rowCount => _rows.length;
-
   @override
   int get selectedRowCount => 0;
 }

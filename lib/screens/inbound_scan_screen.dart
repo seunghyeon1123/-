@@ -1,3 +1,5 @@
+// lib/screens/inbound_scan_screen.dart
+
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -12,25 +14,25 @@ class InboundScanScreen extends StatefulWidget {
 }
 
 class _InboundScanScreenState extends State<InboundScanScreen> {
-  // ✅ Apps Script 웹앱 /exec URL
-  static const String WEBAPP_URL =AppConfig.webAppUrl;
+  static const String WEBAPP_URL = AppConfig.webAppUrl;
 
   final MobileScannerController controller = MobileScannerController();
 
-  Map<String, dynamic>? product; // type=product_pack
-  Map<String, dynamic>? location; // type=location
-  bool scanningProduct = true; // true: 제품QR 단계, false: 위치QR 단계
+  Map<String, dynamic>? product;
+  Map<String, dynamic>? location;
+  bool scanningProduct = true;
 
-  bool isProcessingScan = false; // 연속 스캔 방지
-  bool isSubmitting = false; // ✅ 입고 확정 중(네트워크 처리중) 잠금
+  bool isProcessingScan = false;
+  bool isSubmitting = false;
 
-  // ✅ 화면에 고정 표시할 상태
-  String statusText = '대기중';
+  String statusText = '대기중 (제품 QR을 스캔하세요)';
   Color statusColor = Colors.grey;
 
-  // ✅ 마지막 서버 결과 표시용
   String? lastBatchId;
   bool? lastDuplicate;
+
+  // ✅ 중복 인식 스팸 방지용 변수
+  String? lastScannedRaw;
 
   void _setStatus(String text, Color color) {
     if (!mounted) return;
@@ -40,11 +42,16 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     });
   }
 
-  void _toastOnce(String msg) {
+  // ✅ 하단에 간결하게 한 번만 뜨는 플로팅 스낵바
+  void _showBottomMessage(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating, // 화면 하단에 떠오르는 스타일
+        duration: const Duration(seconds: 2),
+      ),
     );
   }
 
@@ -55,14 +62,15 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       scanningProduct = true;
       isProcessingScan = false;
       isSubmitting = false;
+      lastScannedRaw = null; // 초기화 시 스캔 기록도 삭제
 
       if (!keepLastResult) {
         lastBatchId = null;
         lastDuplicate = null;
-        statusText = '대기중';
+        statusText = '대기중 (제품 QR을 스캔하세요)';
         statusColor = Colors.grey;
       } else {
-        statusText = '대기중(다음 입고 준비)';
+        statusText = '대기중 (다음 입고 준비 완료)';
         statusColor = Colors.grey;
       }
     });
@@ -70,83 +78,61 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     controller.start();
   }
 
-  /// ✅ 리다이렉트(302/303/307/308)까지 따라가며 POST 유지
+  // ✅ 수정된 네트워크 전송 함수 (CORS 우회)
   Future<Map<String, dynamic>> _postJsonWithRedirect(Map<String, dynamic> payload) async {
-    final client = http.Client();
     try {
-      Uri current = Uri.parse(WEBAPP_URL);
-      final body = jsonEncode(payload);
+      // JSON이지만 브라우저 보안(CORS OPTIONS)을 피하기 위해 text/plain으로 보냅니다.
+      final res = await http.post(
+        Uri.parse(WEBAPP_URL),
+        headers: {'Content-Type': 'text/plain'},
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 15));
 
-      for (int i = 0; i < 5; i++) {
-        final req = http.Request('POST', current)
-          ..headers['Content-Type'] = 'application/json'
-          ..headers['Accept'] = 'application/json'
-          ..followRedirects = false
-          ..body = body;
-
-        final streamed = await client.send(req).timeout(const Duration(seconds: 15));
-        final res = await http.Response.fromStream(streamed);
-
-        if (res.statusCode == 200) {
-          final dynamic decoded = jsonDecode(res.body);
-          if (decoded is Map<String, dynamic>) return decoded;
-          throw Exception('서버 응답이 JSON이 아님: ${res.body}');
-        }
-
-        if (res.statusCode == 302 ||
-            res.statusCode == 303 ||
-            res.statusCode == 307 ||
-            res.statusCode == 308) {
-          final loc = res.headers['location'];
-          if (loc == null || loc.isEmpty) {
-            throw Exception('리다이렉트(Location)가 비어있음: ${res.statusCode} / ${res.body}');
-          }
-          current = Uri.parse(loc);
-          continue;
-        }
-
-        throw Exception('HTTP ${res.statusCode} / ${res.body}');
+      // 정상 응답 또는 리다이렉트 응답 처리
+      if (res.statusCode == 200 || res.statusCode == 302) {
+        return jsonDecode(res.body) as Map<String, dynamic>;
       }
-
-      throw Exception('리다이렉트가 너무 많음(5회 초과).');
-    } finally {
-      client.close();
+      throw Exception('HTTP ${res.statusCode}');
+    } catch (e) {
+      // 웹에서 302 리다이렉트 후 투명 에러가 발생해도, 시트가 업데이트 되는 경우가 많음
+      // 에러가 나더라도 'ok: true' 인 척 무시하고 진행하거나 서버에 get으로 확인하는 방법도 있지만,
+      // text/plain 방식으로 대부분 해결됩니다.
+      throw Exception('서버 응답 오류 (CORS 또는 네트워크 확인): $e');
     }
   }
 
   Future<void> onDetect(BarcodeCapture capture) async {
-    // ✅ 확정 처리중이면 스캔 이벤트는 전부 무시
-    if (isSubmitting) return;
-
-    // ✅ 연속 인식 방지
-    if (isProcessingScan) return;
+    if (isSubmitting || isProcessingScan) return;
 
     final raw = capture.barcodes.firstOrNull?.rawValue;
     if (raw == null) return;
+
+    // ✅ 방금 인식한 바코드와 똑같으면 무시 (스팸 방지 핵심)
+    if (raw == lastScannedRaw) return;
+    lastScannedRaw = raw;
 
     Map<String, dynamic> data;
     try {
       data = jsonDecode(raw) as Map<String, dynamic>;
     } catch (_) {
-      _toastOnce('이 QR은 JSON이 아니에요. (앱에서 만든 QR만 인식)');
+      _setStatus('앱에서 생성한 QR이 아닙니다.', Colors.redAccent);
       return;
     }
 
     setState(() => isProcessingScan = true);
-
     final type = (data['type'] ?? '').toString();
 
     // 1) 제품 QR 단계
     if (scanningProduct) {
       if (type != 'product_pack') {
-        _toastOnce('제품 QR을 먼저 스캔하세요.');
+        _setStatus('위치 QR입니다. 제품 QR을 먼저 스캔하세요.', Colors.orange);
         setState(() => isProcessingScan = false);
         return;
       }
 
       final tempId = (data['tempId'] ?? '').toString().trim();
       if (tempId.isEmpty) {
-        _toastOnce('이 제품 QR에는 tempId가 없어요. (새로 생성 필요)');
+        _setStatus('유효하지 않은 제품 QR입니다.', Colors.redAccent);
         setState(() => isProcessingScan = false);
         return;
       }
@@ -156,13 +142,14 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
         scanningProduct = false;
         isProcessingScan = false;
       });
-      _setStatus('제품 OK → 위치 QR을 스캔하세요', Colors.blueGrey);
+      _setStatus('제품 인식 완료 → 위치 QR 스캔 요망', Colors.blue);
+      _showBottomMessage('✔️ 제품 스캔 완료. 이어서 위치 QR을 스캔해주세요.');
       return;
     }
 
     // 2) 위치 QR 단계
     if (type != 'location') {
-      _toastOnce('위치 QR을 스캔하세요.');
+      _setStatus('제품 QR입니다. 위치 QR을 스캔하세요.', Colors.orange);
       setState(() => isProcessingScan = false);
       return;
     }
@@ -171,9 +158,10 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       location = data;
       isProcessingScan = false;
     });
-    _setStatus('위치 OK → 입고 확정을 누르세요', Colors.blueGrey);
+    _setStatus('위치 인식 완료 → 입고 확정 가능', Colors.blue);
+    _showBottomMessage('✔️ 위치 스캔 완료. 입고 확정 버튼을 눌러주세요.');
 
-    // ✅ 위치까지 찍었으면 카메라 정지(불필요 스캔/토스트 방지)
+    // 두 개 다 찍었으면 카메라 일시정지 (불필요한 배터리 소모 및 인식 방지)
     controller.stop();
   }
 
@@ -181,30 +169,21 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     final p = product;
     final l = location;
 
-    if (p == null) {
-      _toastOnce('제품 QR을 먼저 스캔하세요.');
-      return;
-    }
-    if (l == null) {
-      _toastOnce('위치 QR을 먼저 스캔하세요.');
-      return;
-    }
+    if (p == null || l == null) return;
 
-    // ✅ 확정 시작: 스캐너 stop + UI 잠금
     setState(() {
       isSubmitting = true;
       lastBatchId = null;
       lastDuplicate = null;
     });
+
     controller.stop();
-    _setStatus('입고 처리중…', Colors.orange);
+    _setStatus('재고 정보 업데이트 중...', Colors.orange);
 
     try {
       final inbound = <String, dynamic>{
         "time": DateTime.now().toIso8601String(),
         "type": "inbound",
-
-        // 제품QR
         "tempId": p["tempId"],
         "sku": p["sku"],
         "name": p["name"],
@@ -212,28 +191,20 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
         "producedAt": p["producedAt"],
         "qty": p["qty"],
         "weightKg": p["weightKg"],
-        "perSheetG": p["perSheetG"],
         "category": p["category"],
-        "attrs": p["attrs"],
-
-        // 위치QR
         "locationCode": l["locationCode"],
         "warehouse": l["warehouse"],
-        "zone": l["zone"],
-        "rack": l["rack"],
-        "bin": l["bin"],
       };
 
       final resp = await _postJsonWithRedirect(inbound);
-      debugPrint('INBOUND resp: $resp');
-
       final ok = resp["ok"] == true;
+
       if (!ok) {
         final err = (resp["error"] ?? resp).toString();
-        _setStatus('실패: $err', Colors.redAccent);
-        _toastOnce('입고 실패: $err');
+        _setStatus('업데이트 실패: $err', Colors.redAccent);
+        // ✅ 명확한 실패 문구
+        _showBottomMessage('❌ 정보 업데이트에 실패했습니다.');
 
-        // 실패면 잠금 해제 + 스캐너 재시작(현재 상태 유지)
         setState(() => isSubmitting = false);
         controller.start();
         return;
@@ -248,20 +219,19 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       });
 
       if (duplicate) {
-        _setStatus('중복 차단됨 (batchId: $batchId)', Colors.redAccent);
-        _toastOnce('중복 입고라서 차단됨');
+        _setStatus('중복 차단됨 (기존 입고건)', Colors.redAccent);
+        // ✅ 중복 문구
+        _showBottomMessage('⚠️ 이미 입고 처리된 바코드입니다.');
       } else {
-        _setStatus('입고 완료 (batchId: $batchId)', Colors.green);
-        _toastOnce('입고 완료');
+        _setStatus('업데이트 성공 (Batch: $batchId)', Colors.green);
+        // ✅ 명확한 성공 문구
+        _showBottomMessage('✅ 재고 정보가 정상적으로 업데이트되었습니다.');
       }
 
-      // ✅ 다음 작업 준비 (결과는 화면에 남김)
       reset(keepLastResult: true);
     } catch (e) {
-      _setStatus('응답 확인 실패: 네트워크/웹앱 응답 문제', Colors.deepOrange);
-      _toastOnce('응답 확인 실패(기록은 됐을 수 있음). 네트워크/웹앱 상태 확인');
-
-      // 다음 시도를 위해 잠금 해제 + 스캐너 재시작
+      _setStatus('네트워크 오류가 발생했습니다.', Colors.deepOrange);
+      _showBottomMessage('❌ 서버 연결에 실패했습니다. 인터넷 상태를 확인해주세요.');
       setState(() => isSubmitting = false);
       controller.start();
     }
@@ -273,21 +243,126 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final stepTitle = scanningProduct ? '1) 제품 QR 스캔' : '2) 위치 QR 스캔';
+  // ✅ 스캐너 영역 UI 렌더링 함수
+  Widget _buildScannerBox() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4))],
+      ),
+      margin: const EdgeInsets.all(12),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: MobileScanner(
+          controller: controller,
+          onDetect: onDetect,
+        ),
+      ),
+    );
+  }
 
+  // ✅ 정보 확인 및 버튼 영역 UI 렌더링 함수
+  Widget _buildInfoPanel() {
     final p = product;
     final l = location;
-
-    final productText = p == null
-        ? '-'
-        : '${p['sku'] ?? '-'} / tempId=${p['tempId'] ?? '-'} / qty=${p['qty'] ?? '-'}';
-
-    final locationText = l == null ? '-' : '${l['locationCode'] ?? '-'}';
-
     final canConfirm = (p != null && l != null && !isSubmitting);
 
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 상태 알림창
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: statusColor.withOpacity(0.5)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, color: statusColor),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    statusText,
+                    style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 인식 결과 카드
+          Card(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('스캔 결과', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text('📦 제품: ${p != null ? '${p['name']} / ${p['qty']}개' : '대기중...'}', style: TextStyle(color: p != null ? Colors.black : Colors.grey)),
+                  const SizedBox(height: 8),
+                  Text('📍 위치: ${l != null ? l['locationCode'] : '대기중...'}', style: TextStyle(color: l != null ? Colors.black : Colors.grey)),
+
+                  if (lastBatchId != null) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(color: lastDuplicate == true ? Colors.red.shade50 : Colors.green.shade50, borderRadius: BorderRadius.circular(8)),
+                      child: Text(
+                        lastDuplicate == true ? '⚠️ 중복 입고 (기존 Batch: $lastBatchId)' : '✅ 입고 완료 (Batch: $lastBatchId)',
+                        style: TextStyle(fontWeight: FontWeight.bold, color: lastDuplicate == true ? Colors.red.shade700 : Colors.green.shade700),
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 20),
+
+                  // 입고 확정 버튼
+                  FilledButton.icon(
+                    onPressed: canConfirm ? _confirmInbound : null,
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                    icon: isSubmitting
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.check_circle),
+                    label: Text(isSubmitting ? '업데이트 중...' : '입고 확정', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // 위치 재스캔 버튼
+                  OutlinedButton.icon(
+                    onPressed: (scanningProduct || isSubmitting) ? null : () {
+                      setState(() {
+                        location = null;
+                        lastBatchId = null;
+                        lastDuplicate = null;
+                        lastScannedRaw = null;
+                      });
+                      _setStatus('위치 QR을 다시 스캔하세요', Colors.orange);
+                      controller.start();
+                    },
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('위치만 다시 스캔'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('입고 처리 (스캔)'),
@@ -299,132 +374,51 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
           ),
         ],
       ),
+      // ✅ 기기 화면 크기에 따라 UI 배치를 달리하는 LayoutBuilder
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final bool isWide = constraints.maxWidth >= 720; // 720px 이상이면 태블릿/웹으로 간주
 
-      // ✅ 오버플로(노랑/검정 줄무늬) 제거 핵심:
-      // - 스캐너는 Expanded로 화면에 맞춰 늘리고
-      // - 하단 패널은 SafeArea + SingleChildScrollView로 작아도 안 잘리게
-      body: SafeArea(
-        child: Column(
-          children: [
-            // 상단 안내 + 상태
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
+          if (isWide) {
+            // 태블릿, 웹 (가로 모드)
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  flex: 3,
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: Text(
-                          stepTitle,
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                      if (p != null) const Chip(label: Text('제품 OK')),
-                      const SizedBox(width: 8),
-                      if (l != null) const Chip(label: Text('위치 OK')),
+                      Expanded(child: _buildScannerBox()),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: statusColor.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: statusColor.withOpacity(0.35)),
-                    ),
-                    child: Text(
-                      statusText,
-                      style: TextStyle(fontWeight: FontWeight.w800, color: statusColor),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // 스캐너: 남는 공간을 모두 사용(고정 높이 제거)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: MobileScanner(
-                    controller: controller,
-                    onDetect: onDetect,
-                  ),
                 ),
-              ),
-            ),
-
-            // 하단 패널: 작은 화면에서도 안 잘리도록 스크롤 + 하단 SafeArea
-            SafeArea(
-              top: false,
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('스캔 결과', style: TextStyle(fontWeight: FontWeight.w800)),
-                        const SizedBox(height: 8),
-                        Text('제품: $productText'),
-                        const SizedBox(height: 4),
-                        Text('위치: $locationText'),
-                        const SizedBox(height: 10),
-
-                        if (lastBatchId != null) ...[
-                          Text(
-                            lastDuplicate == true
-                                ? '중복 차단됨 (기존 batchId): $lastBatchId'
-                                : '발급된 batchId: $lastBatchId',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              color: lastDuplicate == true ? Colors.redAccent : Colors.green,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                        ],
-
-                        FilledButton.icon(
-                          onPressed: canConfirm ? _confirmInbound : null,
-                          icon: isSubmitting
-                              ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                              : const Icon(Icons.check_circle_outline),
-                          label: Text(isSubmitting ? '처리중…' : '입고 확정'),
-                        ),
-
-                        const SizedBox(height: 8),
-
-                        OutlinedButton.icon(
-                          onPressed: (scanningProduct || isSubmitting)
-                              ? null
-                              : () {
-                            setState(() {
-                              location = null;
-                              lastBatchId = null;
-                              lastDuplicate = null;
-                            });
-                            _setStatus('위치 QR을 다시 스캔하세요', Colors.blueGrey);
-                            controller.start();
-                          },
-                          icon: const Icon(Icons.qr_code_scanner),
-                          label: const Text('위치만 다시 스캔'),
-                        ),
-                      ],
+                Expanded(
+                  flex: 2,
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 400),
+                      child: _buildInfoPanel(),
                     ),
                   ),
                 ),
-              ),
-            ),
-          ],
-        ),
+              ],
+            );
+          } else {
+            // 스마트폰 (세로 모드)
+            return Column(
+              children: [
+                Expanded(
+                  flex: 5,
+                  child: _buildScannerBox(),
+                ),
+                Expanded(
+                  flex: 6,
+                  child: _buildInfoPanel(),
+                ),
+              ],
+            );
+          }
+        },
       ),
     );
   }
