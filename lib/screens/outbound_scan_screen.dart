@@ -35,8 +35,9 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
   String? lastTransactionTime;
   int? lastBGradeQty;
 
-  // ✅ 줌 배율 상태 저장 변수
-  double currentZoom = 1.0;
+  // ✅ 줌 배율 세팅
+  double _currentZoom = 0.25;
+  double _currentScaleLabel = 1.0;
 
   final normalQtyCtrl = TextEditingController();
   final bGradeQtyCtrl = TextEditingController();
@@ -46,7 +47,11 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
     super.initState();
     controller = MobileScannerController(autoStart: false);
     Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted) controller.start();
+      if (mounted) {
+        controller.start().then((_) {
+          controller.setZoomScale(_currentZoom);
+        });
+      }
     });
   }
 
@@ -77,7 +82,7 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
       lastScannedRaw = null; normalQtyCtrl.clear(); bGradeQtyCtrl.clear();
       statusText = '대기중 (제품 QR을 스캔하세요)'; statusColor = Colors.grey;
     });
-    controller.start();
+    controller.start().then((_) => controller.setZoomScale(_currentZoom));
   }
 
   Future<Map<String, dynamic>> _postJsonWithRedirect(Map<String, dynamic> payload) async {
@@ -136,7 +141,7 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
     } catch (e) {
       String errorMsg = e.toString().replaceAll('Exception: ', '');
       if (errorMsg.contains('입고 기록이 없는')) {
-        _setStatus('입고되지 않은 제품입니다', Colors.redAccent); _showBottomMessage('⚠️ 이 QR은 창고에 입고 처리된 기록이 없어 출고할 수 없습니다.');
+        _setStatus('입고되지 않은 제품입니다', Colors.redAccent); _showBottomMessage('⚠️ 이 QR은 입고 처리된 기록이 없어 출고할 수 없습니다.');
       } else {
         _setStatus('서버 응답 오류', Colors.redAccent); _showBottomMessage('❌ 통신 실패: $errorMsg');
       }
@@ -159,11 +164,7 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
 
     try {
       final submitTime = DateTime.now().toIso8601String();
-      final payload = {
-        "time": submitTime, "type": "outbound", "sku": p["sku"], "name": p["name"], "weightKg": p["weightKg"] ?? 0,
-        "locationCode": l["locationCode"], "warehouse": l["warehouse"], "normalQty": normalQty, "bGradeQty": bGradeQty
-      };
-
+      final payload = { "time": submitTime, "type": "outbound", "sku": p["sku"], "name": p["name"], "weightKg": p["weightKg"] ?? 0, "locationCode": l["locationCode"], "warehouse": l["warehouse"], "normalQty": normalQty, "bGradeQty": bGradeQty };
       final resp = await _postJsonWithRedirect(payload);
       if (resp["ok"] == true) {
         _setStatus('출고 완료', Colors.green); _showBottomMessage('✅ 정상적으로 재고가 차감되었습니다.');
@@ -173,11 +174,8 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
       } else { throw Exception(resp["error"]); }
     } catch (e) {
       String errorMsg = e.toString().replaceAll('Exception: ', '');
-      if (errorMsg.contains('재고가 부족합니다')) {
-        _setStatus('재고 부족', Colors.redAccent); _showBottomMessage('⚠️ $errorMsg');
-      } else {
-        _setStatus('처리 실패', Colors.redAccent); _showBottomMessage('❌ 오류: $errorMsg');
-      }
+      if (errorMsg.contains('재고가 부족합니다')) { _setStatus('재고 부족', Colors.redAccent); _showBottomMessage('⚠️ $errorMsg'); }
+      else { _setStatus('처리 실패', Colors.redAccent); _showBottomMessage('❌ 오류: $errorMsg'); }
       setState(() => isSubmitting = false); controller.start();
     }
   }
@@ -196,7 +194,20 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
     } finally { setState(() => isUndoing = false); }
   }
 
-  // ✅ 스캐너 박스 위에 줌 컨트롤 패널 추가!
+  // ✅ 카메라 실제 배율 적용 (초광각 배제)
+  void _setCameraZoom(double scaleParam) {
+    setState(() {
+      _currentScaleLabel = scaleParam;
+      if (scaleParam == 1.0) { _currentZoom = 0.25; }
+      else if (scaleParam == 2.0) { _currentZoom = 0.50; }
+      else if (scaleParam == 3.0) { _currentZoom = 0.75; }
+      else if (scaleParam == 5.0) { _currentZoom = 1.0; }
+
+      controller.setZoomScale(_currentZoom);
+    });
+  }
+
+  // ✅ 줌 컨트롤 UI: 반투명 원형 태그
   Widget _buildScannerBox() {
     return Container(
         decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 8)]),
@@ -207,24 +218,29 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
               fit: StackFit.expand,
               children: [
                 MobileScanner(controller: controller, onDetect: onDetect),
-                // 🔴 [줌 컨트롤 UI] 화면 하단에 배치
                 Positioned(
-                    bottom: 16, left: 0, right: 0,
+                    bottom: 20, left: 0, right: 0,
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [1.0, 2.0, 3.0, 5.0].map((scale) {
-                        final isSelected = currentZoom == scale;
-                        return Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            child: ActionChip(
-                                label: Text('${scale.toInt()}x', style: TextStyle(fontWeight: FontWeight.bold, color: isSelected ? textDark : Colors.white)),
-                                backgroundColor: isSelected ? yogurtTint : Colors.black54,
-                                side: BorderSide.none,
-                                onPressed: () {
-                                  setState(() => currentZoom = scale);
-                                  controller.setZoomScale(scale); // 카메라 하드웨어 줌 적용
-                                }
-                            )
+                        final isSelected = _currentScaleLabel == scale;
+                        return GestureDetector(
+                          onTap: () => _setCameraZoom(scale),
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 8),
+                            width: 48, height: 48,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isSelected ? yogurtTint.withOpacity(0.9) : Colors.black.withOpacity(0.4),
+                              border: Border.all(color: isSelected ? Colors.white : Colors.transparent, width: 2),
+                            ),
+                            child: Center(
+                              child: Text('${scale.toInt()}x', style: TextStyle(
+                                fontWeight: FontWeight.w800, fontSize: 16,
+                                color: isSelected ? textDark : Colors.white,
+                              )),
+                            ),
+                          ),
                         );
                       }).toList(),
                     )
@@ -242,15 +258,7 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: statusColor.withOpacity(0.5))),
-              child: Row(children: [
-                isFetchingLocation ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.info_outline, color: statusColor),
-                const SizedBox(width: 12), Expanded(child: Text(statusText, style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15)))
-              ])
-          ),
-          const SizedBox(height: 12),
+          Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: statusColor.withOpacity(0.5))), child: Row(children: [isFetchingLocation ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.info_outline, color: statusColor), const SizedBox(width: 12), Expanded(child: Text(statusText, style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15)))])), const SizedBox(height: 12),
 
           if (lastTransactionTime != null && p == null) ...[
             Card(
@@ -260,10 +268,7 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
                     child: Column(
                       children: [
                         const Text('방금 출고 처리가 완료되었습니다.', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)), const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                            onPressed: isUndoing ? null : _undoOutbound, style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-                            icon: isUndoing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red)) : const Icon(Icons.undo), label: const Text('실수로 잘못 눌렀다면? (취소)')
-                        )
+                        OutlinedButton.icon(onPressed: isUndoing ? null : _undoOutbound, style: OutlinedButton.styleFrom(foregroundColor: Colors.red), icon: isUndoing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red)) : const Icon(Icons.undo), label: const Text('실수로 잘못 눌렀다면? (취소)'))
                       ],
                     )
                 )
@@ -271,41 +276,18 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
             const SizedBox(height: 12),
           ],
 
-          Card(
-              color: Colors.white, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
-              child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text('출고 대상 확인', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: textDark)), const Divider(), const SizedBox(height: 8),
-                        Text('📦 제품: ${p != null ? '${p['name']} (${p['sku']})' : '대기중...'}', style: TextStyle(color: p != null ? textDark : Colors.grey)), const SizedBox(height: 8),
-                        Text('📍 위치: ${l != null ? l['locationCode'] : (isFetchingLocation ? '서버에서 찾는 중...' : '대기중...')}', style: TextStyle(color: l != null ? textDark : Colors.grey, fontWeight: l != null ? FontWeight.bold : FontWeight.normal)),
+          Card(color: Colors.white, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)), child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('출고 대상 확인', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: textDark)), const Divider(), const SizedBox(height: 8),
+            Text('📦 제품: ${p != null ? '${p['name']} (${p['sku']})' : '대기중...'}', style: TextStyle(color: p != null ? textDark : Colors.grey)), const SizedBox(height: 8),
+            Text('📍 위치: ${l != null ? l['locationCode'] : (isFetchingLocation ? '서버에서 찾는 중...' : '대기중...')}', style: TextStyle(color: l != null ? textDark : Colors.grey, fontWeight: l != null ? FontWeight.bold : FontWeight.normal)),
 
-                        if (p != null && l != null) ...[
-                          const SizedBox(height: 20),
-                          Text('수량 입력 (숫자만 입력)', style: TextStyle(fontWeight: FontWeight.bold, color: textDark)), const SizedBox(height: 12),
-                          Row(
-                              children: [
-                                Expanded(child: TextField(controller: normalQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: '정상 출고 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 40', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8))))),
-                                const SizedBox(width: 12),
-                                Expanded(child: TextField(controller: bGradeQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'B급 빼냄 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 5', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8)))))
-                              ]
-                          )
-                        ],
-                        const SizedBox(height: 20),
-                        FilledButton.icon(
-                            onPressed: canConfirm ? _confirmOutbound : null,
-                            style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), backgroundColor: yogurtTint, foregroundColor: textDark, disabledBackgroundColor: Colors.grey.shade200),
-                            icon: isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.black54, strokeWidth: 2)) : const Icon(Icons.check_circle),
-                            label: Text(isSubmitting ? '처리 중...' : '출고 확정 및 차감', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
-                        ),
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(onPressed: () => reset(), style: OutlinedButton.styleFrom(foregroundColor: textDark, side: BorderSide(color: yogurtTint, width: 2)), icon: const Icon(Icons.refresh), label: const Text('취소하고 다시 스캔'))
-                      ]
-                  )
-              )
-          ),
+            if (p != null && l != null) ...[
+              const SizedBox(height: 20), Text('수량 입력 (숫자만 입력)', style: TextStyle(fontWeight: FontWeight.bold, color: textDark)), const SizedBox(height: 12),
+              Row(children: [Expanded(child: TextField(controller: normalQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: '정상 출고 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 40', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8))))), const SizedBox(width: 12), Expanded(child: TextField(controller: bGradeQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'B급 빼냄 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 5', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8)))))])
+            ],
+            const SizedBox(height: 20),
+            FilledButton.icon(onPressed: canConfirm ? _confirmOutbound : null, style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), backgroundColor: yogurtTint, foregroundColor: textDark, disabledBackgroundColor: Colors.grey.shade200), icon: isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.black54, strokeWidth: 2)) : const Icon(Icons.check_circle), label: Text(isSubmitting ? '처리 중...' : '출고 확정 및 차감', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))), const SizedBox(height: 12), OutlinedButton.icon(onPressed: () => reset(), style: OutlinedButton.styleFrom(foregroundColor: textDark, side: BorderSide(color: yogurtTint, width: 2)), icon: const Icon(Icons.refresh), label: const Text('취소하고 다시 스캔'))
+          ]))),
         ],
       ),
     );
@@ -315,16 +297,8 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: hanjiIvory,
-      appBar: AppBar(backgroundColor: hanjiIvory, elevation: 0, iconTheme: IconThemeData(color: textDark), titleTextStyle: TextStyle(color: textDark, fontSize: 18, fontWeight: FontWeight.bold), title: const Text('출고 스캔'), actions: [IconButton(onPressed: () => reset(), icon: const Icon(Icons.refresh), tooltip: '초기화')]),
-      body: LayoutBuilder(
-          builder: (context, constraints) {
-            if (constraints.maxWidth >= 720) {
-              return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(flex: 3, child: _buildScannerBox()), Expanded(flex: 2, child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: _buildInfoPanel())))]);
-            } else {
-              return Column(children: [Expanded(flex: 4, child: _buildScannerBox()), Expanded(flex: 6, child: _buildInfoPanel())]);
-            }
-          }
-      ),
+      appBar: AppBar(backgroundColor: hanjiIvory, elevation: 0, title: Text('출고 스캔', style: TextStyle(color: textDark, fontWeight: FontWeight.bold)), actions: [IconButton(onPressed: () => reset(), icon: Icon(Icons.refresh, color: textDark), tooltip: '초기화')]),
+      body: LayoutBuilder(builder: (context, constraints) { if (constraints.maxWidth >= 720) { return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(flex: 3, child: _buildScannerBox()), Expanded(flex: 2, child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: _buildInfoPanel())))]); } else { return Column(children: [Expanded(flex: 4, child: _buildScannerBox()), Expanded(flex: 6, child: _buildInfoPanel())]); } }),
     );
   }
 }
