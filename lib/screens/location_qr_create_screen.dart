@@ -1,3 +1,4 @@
+// lib/screens/location_qr_create_screen.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -15,6 +16,11 @@ class LocationQrCreateScreen extends StatefulWidget {
 class _LocationQrCreateScreenState extends State<LocationQrCreateScreen> with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
+
+  // ✅ 한지 아이보리 & 스톤 섀도우(다크그린) 컬러 세팅
+  final Color hanjiIvory = const Color(0xFFFDFBF7);
+  final Color stoneShadow = const Color(0xFF586B54);
+  final Color textDark = const Color(0xFF333333);
 
   final warehouseCtrl = TextEditingController();
   final zoneCtrl = TextEditingController();
@@ -63,7 +69,11 @@ class _LocationQrCreateScreenState extends State<LocationQrCreateScreen> with Au
     final bin = binCtrl.text.trim();
 
     if (wh.isEmpty || zone.isEmpty || rack.isEmpty || bin.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('모두 필수입니다.'), behavior: SnackBarBehavior.floating));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('모두 필수입니다.'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: stoneShadow, // 에러 메시지도 스톤 섀도우 톤으로
+      ));
       return;
     }
     final code = '$wh-$zone-$rack-$bin';
@@ -76,7 +86,10 @@ class _LocationQrCreateScreenState extends State<LocationQrCreateScreen> with Au
   }
 
   Future<void> printLocationQr() async {
-    if (qrData == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('먼저 위치 QR을 생성하세요.'))); return; }
+    if (qrData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: const Text('먼저 위치 QR을 생성하세요.'), backgroundColor: stoneShadow));
+      return;
+    }
     final doc = pw.Document();
     doc.addPage(pw.Page(
       pageFormat: const PdfPageFormat(58 * PdfPageFormat.mm, 60 * PdfPageFormat.mm),
@@ -97,28 +110,59 @@ class _LocationQrCreateScreenState extends State<LocationQrCreateScreen> with Au
     await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => doc.save());
   }
 
+  // ✅ 공통 텍스트 필드 스타일 디자인 (코드 중복 방지)
+  InputDecoration _customInputDeco(String label) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: TextStyle(color: stoneShadow),
+      filled: true,
+      fillColor: Colors.white,
+      enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
+      focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: stoneShadow, width: 2), borderRadius: BorderRadius.circular(8)),
+    );
+  }
+
   Widget _buildInputForm() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('위치 정보 입력', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)), const SizedBox(height: 12),
-        TextField(controller: warehouseCtrl, decoration: const InputDecoration(labelText: '창고 코드 (예: WH1) *', border: OutlineInputBorder())), const SizedBox(height: 12),
-        TextField(controller: zoneCtrl, decoration: const InputDecoration(labelText: '구역 (예: A) *', border: OutlineInputBorder())), const SizedBox(height: 12),
-        TextField(controller: rackCtrl, decoration: const InputDecoration(labelText: '랙 (예: 01) *', border: OutlineInputBorder())), const SizedBox(height: 12),
-        TextField(controller: binCtrl, decoration: const InputDecoration(labelText: '빈/칸 (예: 01) *', border: OutlineInputBorder())), const SizedBox(height: 20),
-        FilledButton.icon(onPressed: generateLocationQr, icon: const Icon(Icons.qr_code_2_outlined), label: const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('위치 QR 생성', style: TextStyle(fontSize: 16)))),
+        Text('위치 정보 입력', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: stoneShadow)), const SizedBox(height: 12),
+        TextField(controller: warehouseCtrl, decoration: _customInputDeco('창고 코드 (예: WH1) *')), const SizedBox(height: 12),
+        TextField(controller: zoneCtrl, decoration: _customInputDeco('구역 (예: A) *')), const SizedBox(height: 12),
+        TextField(controller: rackCtrl, decoration: _customInputDeco('랙 (예: 01) *')), const SizedBox(height: 12),
+        TextField(controller: binCtrl, decoration: _customInputDeco('빈/칸 (예: 01) *')), const SizedBox(height: 20),
+
+        FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: stoneShadow),
+            onPressed: generateLocationQr,
+            icon: const Icon(Icons.qr_code_2_outlined),
+            label: const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('위치 QR 생성', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))
+        ),
+
         if (MediaQuery.of(context).size.width < 800) ...[ const SizedBox(height: 24), _buildQrResult(), ]
       ],
     );
   }
 
   Widget _buildQrResult() {
-    if (qrData == null) return const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('입력 후 [위치 QR 생성]을 누르세요.')));
+    if (qrData == null) return Center(child: Padding(padding: const EdgeInsets.all(32), child: Text('입력 후 [위치 QR 생성]을 누르세요.', style: TextStyle(color: stoneShadow.withOpacity(0.5)))));
     return Column(
       children: [
-        Text('위치 코드: $locationCode', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)), const SizedBox(height: 16),
-        Center(child: QrImageView(data: qrData!, version: QrVersions.auto, size: 220)), const SizedBox(height: 16),
-        FilledButton.icon(onPressed: printLocationQr, icon: const Icon(Icons.print), label: const Text('QR 인쇄')), const SizedBox(height: 24),
+        Text('위치 코드: $locationCode', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: textDark)),
+        const SizedBox(height: 16),
+        Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade300)),
+            child: QrImageView(data: qrData!, version: QrVersions.auto, size: 220)
+        ),
+        const SizedBox(height: 20),
+        FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: stoneShadow),
+            onPressed: printLocationQr,
+            icon: const Icon(Icons.print),
+            label: const Padding(padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: Text('QR 인쇄', style: TextStyle(fontSize: 16)))
+        ),
+        const SizedBox(height: 24),
       ],
     );
   }
@@ -127,11 +171,24 @@ class _LocationQrCreateScreenState extends State<LocationQrCreateScreen> with Au
   Widget build(BuildContext context) {
     super.build(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('위치 QR 생성'), actions: [IconButton(onPressed: resetForm, icon: const Icon(Icons.refresh), tooltip: '초기화')]),
+      // ✅ 전체 배경 한지 아이보리
+      backgroundColor: hanjiIvory,
+      appBar: AppBar(
+          backgroundColor: hanjiIvory,
+          elevation: 0,
+          iconTheme: IconThemeData(color: stoneShadow),
+          titleTextStyle: TextStyle(color: textDark, fontSize: 18, fontWeight: FontWeight.bold),
+          title: const Text('위치 QR 생성'),
+          actions: [IconButton(onPressed: resetForm, icon: const Icon(Icons.refresh), tooltip: '초기화')]
+      ),
       body: LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth >= 800) {
-            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(flex: 3, child: _buildInputForm()), const VerticalDivider(width: 1), Expanded(flex: 2, child: SingleChildScrollView(padding: const EdgeInsets.only(top: 24), child: _buildQrResult()))]);
+            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(flex: 3, child: _buildInputForm()),
+              VerticalDivider(width: 1, color: Colors.grey.shade300),
+              Expanded(flex: 2, child: SingleChildScrollView(padding: const EdgeInsets.only(top: 24), child: _buildQrResult()))
+            ]);
           } else return _buildInputForm();
         },
       ),

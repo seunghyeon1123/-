@@ -22,7 +22,6 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
   int? sortColumnIndex; bool sortAscending = true; int rowsPerPage = 20; DateTime? lastFetchedAt;
   late final _InventoryDataSource dataSource; late final Map<String, ProductItem> _catalogMap;
 
-  // ✅ 웹 가로 스크롤을 위한 컨트롤러 추가
   final ScrollController _horizontalScrollController = ScrollController();
 
   @override
@@ -63,20 +62,17 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
   void _applyFilterAndSort() {
     final view = _filteredBase();
     if (sortColumnIndex != null) {
+      // ✅ SKU, 창고, 생산자가 빠졌으므로 인덱스를 새로 맞췄습니다.
       switch (sortColumnIndex) {
-        case 0: view.sort((a, b) => sortAscending ? s(a, 'sku', '').compareTo(s(b, 'sku', '')) : s(b, 'sku', '').compareTo(s(a, 'sku', ''))); break;
-        case 1: view.sort((a, b) => sortAscending ? s(a, 'name', '').compareTo(s(b, 'name', '')) : s(b, 'name', '').compareTo(s(a, 'name', ''))); break;
-        case 2: view.sort((a, b) => sortAscending ? s(a, 'warehouse', '').compareTo(s(b, 'warehouse', '')) : s(b, 'warehouse', '').compareTo(s(a, 'warehouse', ''))); break;
-        case 3: view.sort((a, b) => sortAscending ? s(a, 'locationCode', '').compareTo(s(b, 'locationCode', '')) : s(b, 'locationCode', '').compareTo(s(a, 'locationCode', ''))); break;
-        case 4: view.sort((a, b) => sortAscending ? pickNum(a, ['qty', 'qtyTotal']).compareTo(pickNum(b, ['qty', 'qtyTotal'])) : pickNum(b, ['qty', 'qtyTotal']).compareTo(pickNum(a, ['qty', 'qtyTotal']))); break;
-        case 5: view.sort((a, b) => sortAscending ? pickNum(a, ['weightKgTotal', 'weightKg']).compareTo(pickNum(b, ['weightKgTotal', 'weightKg'])) : pickNum(b, ['weightKgTotal', 'weightKg']).compareTo(pickNum(a, ['weightKgTotal', 'weightKg']))); break;
-        case 6: view.sort((a, b) { final av = s(a, 'updatedAt', ''); final bv = s(b, 'updatedAt', ''); return sortAscending ? av.compareTo(bv) : bv.compareTo(av); }); break;
+        case 0: view.sort((a, b) => sortAscending ? s(a, 'name', '').compareTo(s(b, 'name', '')) : s(b, 'name', '').compareTo(s(a, 'name', ''))); break;
+        case 1: view.sort((a, b) => sortAscending ? s(a, 'locationCode', '').compareTo(s(b, 'locationCode', '')) : s(b, 'locationCode', '').compareTo(s(a, 'locationCode', ''))); break;
+        case 2: view.sort((a, b) => sortAscending ? pickNum(a, ['qty', 'qtyTotal']).compareTo(pickNum(b, ['qty', 'qtyTotal'])) : pickNum(b, ['qty', 'qtyTotal']).compareTo(pickNum(a, ['qty', 'qtyTotal']))); break;
+        case 3: view.sort((a, b) => sortAscending ? pickNum(a, ['weightKg']).compareTo(pickNum(b, ['weightKg'])) : pickNum(b, ['weightKg']).compareTo(pickNum(a, ['weightKg']))); break;
+        case 4: view.sort((a, b) { final av = s(a, 'updatedAt', ''); final bv = s(b, 'updatedAt', ''); return sortAscending ? av.compareTo(bv) : bv.compareTo(av); }); break;
       }
     }
     dataSource.update(view);
   }
-
-  // lib/screens/inventory_screen.dart 내의 load 함수를 아래 코드로 교체해주세요.
 
   Future<void> load() async {
     setState(() { loading = true; error = null; });
@@ -91,7 +87,6 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
           body: jsonEncode(payload)
       ).timeout(const Duration(seconds: 45));
 
-      // 💡 핵심: 302 임시 이동이 뜨면, 진짜 데이터가 있는 주소로 한 번 더 쫓아감!
       if (res.statusCode == 302 || res.statusCode == 303) {
         final redirectUrl = res.headers['location'] ?? res.headers['Location'];
         if (redirectUrl != null) {
@@ -126,7 +121,6 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    // ✅ 전체를 SingleChildScrollView로 묶어 오버플로우 바 제거
     return Scaffold(
       appBar: AppBar(title: const Text('재고 현황(표)'), actions: [IconButton(onPressed: load, icon: const Icon(Icons.refresh))]),
       body: SingleChildScrollView(
@@ -148,7 +142,7 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
               ),
             ),
             Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 8), child: Text('마지막 갱신: ${_fmtTime(lastFetchedAt)}   |   표시: ${dataSource.rowCount}건', style: TextStyle(color: Colors.black.withOpacity(0.65)))),
-            if (loading) const Center(child: CircularProgressIndicator()) // ✅ SingleChildScrollView 내 Center 수정
+            if (loading) const Center(child: CircularProgressIndicator())
             else if (error != null) Center(child: Text('불러오기 실패\n$error', textAlign: TextAlign.center))
             else Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
@@ -158,8 +152,9 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
                     decoration: BoxDecoration(border: Border.all(color: Colors.black12), borderRadius: BorderRadius.circular(12)),
                     child: LayoutBuilder(
                       builder: (context, constraints) {
-                        final double tableWidth = constraints.maxWidth < 1000 ? 1000 : constraints.maxWidth;
-                        return Scrollbar( // ✅ 가로 스크롤바 유지
+                        // ✅ 테이블 너비를 1000에서 600으로 줄여서 열 간격을 좁히고 한눈에 들어오게 압축!
+                        final double tableWidth = constraints.maxWidth < 600 ? 600 : constraints.maxWidth;
+                        return Scrollbar(
                           controller: _horizontalScrollController,
                           thumbVisibility: true,
                           child: SingleChildScrollView(
@@ -168,11 +163,15 @@ class _InventoryScreenState extends State<InventoryScreen> with AutomaticKeepAli
                             child: SizedBox(
                               width: tableWidth,
                               child: PaginatedDataTable(
-                                columnSpacing: 10, // ✅ 열 사이 간격 대폭 축소 (이전 답변 20 -> 10)
+                                columnSpacing: 24, // ✅ 열 사이 간격을 적당히 좁힘
                                 horizontalMargin: 16,
                                 rowsPerPage: rowsPerPage, availableRowsPerPage: const [10, 20, 50, 100], onRowsPerPageChanged: (v) { if (v != null) setState(() => rowsPerPage = v); }, sortColumnIndex: sortColumnIndex, sortAscending: sortAscending,
+                                // ✅ 딱 필요한 5개 열만 남김
                                 columns: [
-                                  DataColumn(label: const Text('SKU', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(label: const Text('품목명', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(label: const Text('창고', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(label: const Text('위치코드', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(numeric: true, label: const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(numeric: true, label: const Text('무게(kg)', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), DataColumn(label: const Text('생산자', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort), // ✅ 생산자 열 추가
+                                  DataColumn(label: const Text('품목명', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(label: const Text('위치코드', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(numeric: true, label: const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
+                                  DataColumn(numeric: true, label: const Text('무게(kg)', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
                                   DataColumn(label: const Text('변동일', style: TextStyle(fontWeight: FontWeight.w800)), onSort: _onSort),
                                 ], source: dataSource,
                               ),
@@ -208,8 +207,12 @@ class _InventoryDataSource extends DataTableSource {
     final it = _rows[index];
     return DataRow.byIndex(
       index: index,
+      // ✅ 요청하신 순서대로 딱 5개 열만 매칭! 무게는 합산(weightKgTotal)을 버리고 고유 무게(weightKg)만 표시합니다.
       cells: [
-        DataCell(SelectableText(_s(it, 'sku', '-'))), DataCell(SelectableText(_s(it, 'name', '-'))), DataCell(Text(_s(it, 'warehouse', '-'))), DataCell(SelectableText(_s(it, 'locationCode', '-'))), DataCell(Text(_pickNum(it, ['qty', 'qtyTotal']).toString())), DataCell(Text(_fmtKg(_pickNum(it, ['weightKgTotal', 'weightKg'])))), DataCell(Text(_s(it, 'producer', '-'))), // ✅ 생산자 데이터 추가
+        DataCell(SelectableText(_s(it, 'name', '-'))),
+        DataCell(SelectableText(_s(it, 'locationCode', '-'))),
+        DataCell(Text(_pickNum(it, ['qty', 'qtyTotal']).toString())),
+        DataCell(Text(_fmtKg(_pickNum(it, ['weightKg'])))),
         DataCell(Text(_formatDate(_s(it, 'updatedAt', '-')))),
       ],
     );

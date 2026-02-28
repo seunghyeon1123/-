@@ -16,15 +16,27 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
   static const String WEBAPP_URL = AppConfig.webAppUrl;
   late MobileScannerController controller;
 
+  final Color hanjiIvory = const Color(0xFFFDFBF7);
+  final Color yogurtTint = const Color(0xFFE7E2DE);
+  final Color textDark = const Color(0xFF333333);
+
   Map<String, dynamic>? product;
   Map<String, dynamic>? location;
-  bool scanningProduct = true;
+
+  bool isFetchingLocation = false;
   bool isProcessingScan = false;
   bool isSubmitting = false;
+  bool isUndoing = false;
 
   String statusText = '대기중 (제품 QR을 스캔하세요)';
   Color statusColor = Colors.grey;
   String? lastScannedRaw;
+
+  String? lastTransactionTime;
+  int? lastBGradeQty;
+
+  // ✅ 줌 배율 상태 저장 변수
+  double currentZoom = 1.0;
 
   final normalQtyCtrl = TextEditingController();
   final bGradeQtyCtrl = TextEditingController();
@@ -49,160 +61,182 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
 
   void _setStatus(String text, Color color) {
     if (!mounted) return;
-    setState(() {
-      statusText = text;
-      statusColor = color;
-    });
+    setState(() { statusText = text; statusColor = color; });
   }
 
   void _showBottomMessage(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 4))
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 4)));
   }
 
   void reset() {
     setState(() {
-      product = null;
-      location = null;
-      scanningProduct = true;
-      isProcessingScan = false;
-      isSubmitting = false;
-      lastScannedRaw = null;
-      normalQtyCtrl.clear();
-      bGradeQtyCtrl.clear();
-      statusText = '대기중 (제품 QR을 스캔하세요)';
-      statusColor = Colors.grey;
+      product = null; location = null;
+      isFetchingLocation = false; isProcessingScan = false; isSubmitting = false; isUndoing = false;
+      lastScannedRaw = null; normalQtyCtrl.clear(); bGradeQtyCtrl.clear();
+      statusText = '대기중 (제품 QR을 스캔하세요)'; statusColor = Colors.grey;
     });
     controller.start();
   }
 
   Future<Map<String, dynamic>> _postJsonWithRedirect(Map<String, dynamic> payload) async {
     try {
-      var res = await http.post(
-          Uri.parse(WEBAPP_URL),
-          headers: {'Content-Type': 'text/plain'},
-          body: jsonEncode(payload)
-      ).timeout(const Duration(seconds: 45));
-
+      var res = await http.post(Uri.parse(WEBAPP_URL), headers: {'Content-Type': 'text/plain'}, body: jsonEncode(payload)).timeout(const Duration(seconds: 45));
       if (res.statusCode == 302 || res.statusCode == 303) {
         final redirectUrl = res.headers['location'] ?? res.headers['Location'];
-        if (redirectUrl != null) {
-          res = await http.get(Uri.parse(redirectUrl)).timeout(const Duration(seconds: 45));
-        }
+        if (redirectUrl != null) res = await http.get(Uri.parse(redirectUrl)).timeout(const Duration(seconds: 45));
       }
       if (res.statusCode == 200) {
         try {
           return jsonDecode(res.body) as Map<String, dynamic>;
         } catch (e) {
-          throw Exception('구글 응답 파싱 실패: ${res.body}');
+          if(res.body.contains("<html")) throw Exception('서버 설정 오류: 구글 스크립트 새 배포가 필요하거나 URL이 잘못되었습니다.');
+          throw Exception('구글 응답 파싱 실패');
         }
       }
       throw Exception('HTTP 상태 코드 에러: ${res.statusCode}');
-    } on TimeoutException {
-      throw Exception('응답 시간 초과');
-    } catch (e) {
-      throw Exception('통신 오류: $e');
-    }
+    } on TimeoutException { throw Exception('서버 응답 시간 초과'); } catch (e) { throw Exception('통신 오류: $e'); }
   }
 
   Future<void> onDetect(BarcodeCapture capture) async {
-    if (isSubmitting || isProcessingScan) return;
+    if (isSubmitting || isProcessingScan || isFetchingLocation || isUndoing) return;
     final raw = capture.barcodes.firstOrNull?.rawValue;
     if (raw == null || raw == lastScannedRaw) return;
     lastScannedRaw = raw;
 
     Map<String, dynamic> data;
     try {
-      // ✅ 스마트 QR & 일반 QR 동시 지원 로직
       if (raw.startsWith('https://andonghanji.com/board/index.php?app_data=')) {
-        final base64String = raw.split('app_data=')[1];
-        final decodedJsonString = utf8.decode(base64Decode(base64String));
-        data = jsonDecode(decodedJsonString) as Map<String, dynamic>;
+        data = jsonDecode(utf8.decode(base64Decode(raw.split('app_data=')[1]))) as Map<String, dynamic>;
       } else {
         data = jsonDecode(raw) as Map<String, dynamic>;
       }
     } catch (_) {
-      _setStatus('유효하지 않은 QR입니다.', Colors.redAccent);
-      return;
+      _setStatus('유효하지 않은 QR입니다.', Colors.redAccent); return;
     }
 
-    setState(() => isProcessingScan = true);
     final type = (data['type'] ?? '').toString();
-
-    if (scanningProduct) {
-      if (type != 'product_pack') { _setStatus('위치 QR입니다. 제품 QR을 스캔하세요.', Colors.orange); setState(() => isProcessingScan = false); return; }
-      setState(() { product = data; scanningProduct = false; isProcessingScan = false; });
-      _setStatus('제품 인식 완료 → 위치 QR 스캔 요망', Colors.blue); _showBottomMessage('✔️ 제품 스캔 완료. 가져올 위치의 QR을 스캔하세요.');
+    if (type != 'product_pack') {
+      _setStatus('제품 QR만 스캔 가능합니다.', Colors.orange);
       return;
     }
 
-    if (type != 'location') { _setStatus('제품 QR입니다. 위치 QR을 스캔하세요.', Colors.orange); setState(() => isProcessingScan = false); return; }
-    setState(() { location = data; isProcessingScan = false; });
-    _setStatus('위치 인식 완료 → 수량을 입력하세요', Colors.green); _showBottomMessage('✔️ 위치 스캔 완료. 출고 및 불량 수량을 입력해주세요.');
+    setState(() { product = data; isFetchingLocation = true; });
     controller.stop();
+    _setStatus('위치 확인 중...', Colors.orange);
+
+    try {
+      final resp = await _postJsonWithRedirect({ "action": "getLocationByTempId", "tempId": data["tempId"] });
+      if (resp["ok"] == true) {
+        setState(() { location = { "locationCode": resp["locationCode"], "warehouse": resp["warehouse"] }; isFetchingLocation = false; });
+        _setStatus('위치 확인 완료! 수량을 입력하세요.', Colors.green);
+        _showBottomMessage('✔️ 서버에서 위치 정보를 자동으로 불러왔습니다.');
+      } else { throw Exception(resp["error"]); }
+    } catch (e) {
+      String errorMsg = e.toString().replaceAll('Exception: ', '');
+      if (errorMsg.contains('입고 기록이 없는')) {
+        _setStatus('입고되지 않은 제품입니다', Colors.redAccent); _showBottomMessage('⚠️ 이 QR은 창고에 입고 처리된 기록이 없어 출고할 수 없습니다.');
+      } else {
+        _setStatus('서버 응답 오류', Colors.redAccent); _showBottomMessage('❌ 통신 실패: $errorMsg');
+      }
+      setState(() => isFetchingLocation = false);
+      controller.start();
+    }
   }
 
   Future<void> _confirmOutbound() async {
-    final p = product;
-    final l = location;
+    final p = product; final l = location;
     if (p == null || l == null) return;
 
     final int normalQty = int.tryParse(normalQtyCtrl.text) ?? 0;
     final int bGradeQty = int.tryParse(bGradeQtyCtrl.text) ?? 0;
 
-    if (normalQty == 0 && bGradeQty == 0) {
-      _showBottomMessage('⚠️ 출고 또는 불량 수량을 최소 1개 이상 입력하세요.');
-      return;
-    }
+    if (normalQty == 0 && bGradeQty == 0) { _showBottomMessage('⚠️ 출고 또는 불량 수량을 최소 1개 이상 입력하세요.'); return; }
 
-    setState(() => isSubmitting = true);
-    _setStatus('출고 정보 업데이트 중...', Colors.orange);
+    setState(() { isSubmitting = true; lastTransactionTime = null; lastBGradeQty = null; });
+    _setStatus('출고 처리 중...', Colors.orange);
 
     try {
+      final submitTime = DateTime.now().toIso8601String();
       final payload = {
-        "time": DateTime.now().toIso8601String(),
-        "type": "outbound",
-        "sku": p["sku"],
-        "name": p["name"],
-        "locationCode": l["locationCode"],
-        "warehouse": l["warehouse"],
-        "normalQty": normalQty,
-        "bGradeQty": bGradeQty
+        "time": submitTime, "type": "outbound", "sku": p["sku"], "name": p["name"], "weightKg": p["weightKg"] ?? 0,
+        "locationCode": l["locationCode"], "warehouse": l["warehouse"], "normalQty": normalQty, "bGradeQty": bGradeQty
       };
+
       final resp = await _postJsonWithRedirect(payload);
       if (resp["ok"] == true) {
-        _setStatus('출고 처리 완료', Colors.green);
-        _showBottomMessage('✅ 정상적으로 재고가 차감되었습니다.');
+        _setStatus('출고 완료', Colors.green); _showBottomMessage('✅ 정상적으로 재고가 차감되었습니다.');
+        setState(() { lastTransactionTime = submitTime; lastBGradeQty = bGradeQty; });
         reset();
-      } else {
-        throw Exception(resp["error"]);
-      }
+        setState(() { statusText = '대기중 (다음 제품 QR 스캔)'; statusColor = Colors.grey; });
+      } else { throw Exception(resp["error"]); }
     } catch (e) {
-      _setStatus('오류 발생', Colors.redAccent);
-      _showBottomMessage('❌ 상세 오류: $e');
-      setState(() => isSubmitting = false);
-      controller.start();
+      String errorMsg = e.toString().replaceAll('Exception: ', '');
+      if (errorMsg.contains('재고가 부족합니다')) {
+        _setStatus('재고 부족', Colors.redAccent); _showBottomMessage('⚠️ $errorMsg');
+      } else {
+        _setStatus('처리 실패', Colors.redAccent); _showBottomMessage('❌ 오류: $errorMsg');
+      }
+      setState(() => isSubmitting = false); controller.start();
     }
   }
 
+  Future<void> _undoOutbound() async {
+    if (lastTransactionTime == null) return;
+    setState(() => isUndoing = true); _setStatus('출고 취소 중...', Colors.orange);
+    try {
+      final resp = await _postJsonWithRedirect({ "action": "undo", "targetType": "outbound", "targetId": lastTransactionTime, "bGradeQty": lastBGradeQty ?? 0 });
+      if (resp["ok"] == true) {
+        _setStatus('취소 완료', Colors.green); _showBottomMessage('✅ 방금 처리한 출고 내역이 원상복구 되었습니다.');
+        setState(() { lastTransactionTime = null; lastBGradeQty = null; });
+      } else { throw Exception(resp["error"]); }
+    } catch (e) {
+      _setStatus('취소 실패', Colors.redAccent); _showBottomMessage('❌ 오류: ${e.toString().replaceAll('Exception: ', '')}');
+    } finally { setState(() => isUndoing = false); }
+  }
+
+  // ✅ 스캐너 박스 위에 줌 컨트롤 패널 추가!
   Widget _buildScannerBox() {
     return Container(
-        decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(16)),
+        decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 8)]),
         margin: const EdgeInsets.all(12),
         child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
-            child: MobileScanner(controller: controller, onDetect: onDetect)
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                MobileScanner(controller: controller, onDetect: onDetect),
+                // 🔴 [줌 컨트롤 UI] 화면 하단에 배치
+                Positioned(
+                    bottom: 16, left: 0, right: 0,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [1.0, 2.0, 3.0, 5.0].map((scale) {
+                        final isSelected = currentZoom == scale;
+                        return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            child: ActionChip(
+                                label: Text('${scale.toInt()}x', style: TextStyle(fontWeight: FontWeight.bold, color: isSelected ? textDark : Colors.white)),
+                                backgroundColor: isSelected ? yogurtTint : Colors.black54,
+                                side: BorderSide.none,
+                                onPressed: () {
+                                  setState(() => currentZoom = scale);
+                                  controller.setZoomScale(scale); // 카메라 하드웨어 줌 적용
+                                }
+                            )
+                        );
+                      }).toList(),
+                    )
+                )
+              ],
+            )
         )
     );
   }
 
   Widget _buildInfoPanel() {
-    final p = product;
-    final l = location;
-    final canConfirm = (p != null && l != null && !isSubmitting);
+    final p = product; final l = location; final canConfirm = (p != null && l != null && !isSubmitting && !isUndoing);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
       child: Column(
@@ -210,86 +244,64 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
         children: [
           Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.1), // 최신 문법으로 경고 해결
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: statusColor.withValues(alpha: 0.5))
-              ),
-              child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: statusColor),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(statusText, style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15)))
-                  ]
-              )
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: statusColor.withOpacity(0.5))),
+              child: Row(children: [
+                isFetchingLocation ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Icon(Icons.info_outline, color: statusColor),
+                const SizedBox(width: 12), Expanded(child: Text(statusText, style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15)))
+              ])
           ),
           const SizedBox(height: 12),
+
+          if (lastTransactionTime != null && p == null) ...[
+            Card(
+                color: Colors.green.shade50, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.green.shade200)),
+                child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        const Text('방금 출고 처리가 완료되었습니다.', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)), const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                            onPressed: isUndoing ? null : _undoOutbound, style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                            icon: isUndoing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red)) : const Icon(Icons.undo), label: const Text('실수로 잘못 눌렀다면? (취소)')
+                        )
+                      ],
+                    )
+                )
+            ),
+            const SizedBox(height: 12),
+          ],
+
           Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              color: Colors.white, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
               child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Text('출고 대상 확인', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-                        const Divider(),
-                        const SizedBox(height: 8),
-                        Text('📦 제품: ${p != null ? '${p['name']} (${p['sku']})' : '대기중...'}', style: TextStyle(color: p != null ? Colors.black : Colors.grey)),
-                        const SizedBox(height: 8),
-                        Text('📍 위치: ${l != null ? l['locationCode'] : '대기중...'}', style: TextStyle(color: l != null ? Colors.black : Colors.grey)),
+                        Text('출고 대상 확인', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: textDark)), const Divider(), const SizedBox(height: 8),
+                        Text('📦 제품: ${p != null ? '${p['name']} (${p['sku']})' : '대기중...'}', style: TextStyle(color: p != null ? textDark : Colors.grey)), const SizedBox(height: 8),
+                        Text('📍 위치: ${l != null ? l['locationCode'] : (isFetchingLocation ? '서버에서 찾는 중...' : '대기중...')}', style: TextStyle(color: l != null ? textDark : Colors.grey, fontWeight: l != null ? FontWeight.bold : FontWeight.normal)),
 
-                        if (p != null && l != null) ...[ // 🚨 아까 여기서 괄호 에러가 났었습니다! 지금은 완벽히 수정됨.
+                        if (p != null && l != null) ...[
                           const SizedBox(height: 20),
-                          const Text('수량 입력 (숫자만 입력)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
-                          const SizedBox(height: 12),
+                          Text('수량 입력 (숫자만 입력)', style: TextStyle(fontWeight: FontWeight.bold, color: textDark)), const SizedBox(height: 12),
                           Row(
                               children: [
-                                Expanded(
-                                    child: TextField(
-                                        controller: normalQtyCtrl,
-                                        keyboardType: TextInputType.number,
-                                        decoration: InputDecoration(
-                                            labelText: '정상 출고 (장)',
-                                            hintText: '예: 40',
-                                            border: const OutlineInputBorder(),
-                                            fillColor: Colors.blue.shade50,
-                                            filled: true
-                                        )
-                                    )
-                                ),
+                                Expanded(child: TextField(controller: normalQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: '정상 출고 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 40', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8))))),
                                 const SizedBox(width: 12),
-                                Expanded(
-                                    child: TextField(
-                                        controller: bGradeQtyCtrl,
-                                        keyboardType: TextInputType.number,
-                                        decoration: InputDecoration(
-                                            labelText: 'B급 빼냄 (장)',
-                                            hintText: '예: 5',
-                                            border: const OutlineInputBorder(),
-                                            fillColor: Colors.red.shade50,
-                                            filled: true
-                                        )
-                                    )
-                                )
+                                Expanded(child: TextField(controller: bGradeQtyCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'B급 빼냄 (장)', labelStyle: TextStyle(color: textDark), hintText: '예: 5', filled: true, fillColor: Colors.white, enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)), focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: yogurtTint, width: 2), borderRadius: BorderRadius.circular(8)))))
                               ]
                           )
                         ],
                         const SizedBox(height: 20),
                         FilledButton.icon(
                             onPressed: canConfirm ? _confirmOutbound : null,
-                            style: FilledButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 16),
-                                backgroundColor: Colors.orange.shade700
-                            ),
-                            icon: isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.check_circle),
+                            style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), backgroundColor: yogurtTint, foregroundColor: textDark, disabledBackgroundColor: Colors.grey.shade200),
+                            icon: isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.black54, strokeWidth: 2)) : const Icon(Icons.check_circle),
                             label: Text(isSubmitting ? '처리 중...' : '출고 확정 및 차감', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
                         ),
                         const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                            onPressed: () => reset(),
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('전체 다시 스캔')
-                        )
+                        OutlinedButton.icon(onPressed: () => reset(), style: OutlinedButton.styleFrom(foregroundColor: textDark, side: BorderSide(color: yogurtTint, width: 2)), icon: const Icon(Icons.refresh), label: const Text('취소하고 다시 스캔'))
                       ]
                   )
               )
@@ -302,23 +314,14 @@ class _OutboundScanScreenState extends State<OutboundScanScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: hanjiIvory,
+      appBar: AppBar(backgroundColor: hanjiIvory, elevation: 0, iconTheme: IconThemeData(color: textDark), titleTextStyle: TextStyle(color: textDark, fontSize: 18, fontWeight: FontWeight.bold), title: const Text('출고 스캔'), actions: [IconButton(onPressed: () => reset(), icon: const Icon(Icons.refresh), tooltip: '초기화')]),
       body: LayoutBuilder(
           builder: (context, constraints) {
             if (constraints.maxWidth >= 720) {
-              return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(flex: 3, child: _buildScannerBox()),
-                    Expanded(flex: 2, child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: _buildInfoPanel())))
-                  ]
-              );
+              return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(flex: 3, child: _buildScannerBox()), Expanded(flex: 2, child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 400), child: _buildInfoPanel())))]);
             } else {
-              return Column(
-                  children: [
-                    Expanded(flex: 4, child: _buildScannerBox()),
-                    Expanded(flex: 6, child: _buildInfoPanel())
-                  ]
-              );
+              return Column(children: [Expanded(flex: 4, child: _buildScannerBox()), Expanded(flex: 6, child: _buildInfoPanel())]);
             }
           }
       ),

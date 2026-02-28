@@ -66,6 +66,7 @@ flutter:
   - assets/fonts/Pretendard-Bold.ttf
   - assets/fonts/Pretendard-Medium.ttf
   - assets/fonts/Pretendard-ExtraLight.ttf
+  - assets/fonts/PretendardJP-Bold.ttf
   - assets/images/logo.png
   # To add assets to your application, add an assets section, like this:
   # assets:
