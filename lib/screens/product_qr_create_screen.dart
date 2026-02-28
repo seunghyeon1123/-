@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -164,10 +165,7 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
       Iterable<ProductItem> test = catalogItems;
       if (selectedCategory != '전체') test = test.where((it) => it.category == selectedCategory);
       test = test.where((it) => next.every((a) => it.attrs.contains(a)));
-      if (test.isEmpty) {
-        _toast('이 조합에 해당하는 품목이 없어요.');
-        return;
-      }
+      if (test.isEmpty) { _toast('이 조합에 해당하는 품목이 없어요.'); return; }
     }
     setState(() { selectedAttrs.clear(); selectedAttrs.addAll(next); });
     _saveData('prod_attrs', selectedAttrs.toList());
@@ -222,108 +220,151 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
       "version": 1,
     };
 
-    // ✅ JSON 데이터를 안전한 문자열(Base64)로 변환
     final jsonString = jsonEncode(payload);
     final base64Data = base64Encode(utf8.encode(jsonString));
+    final smartQrUrl = 'https://andonghanji.com/board/index.php?app_data=$base64Data';
 
-    // ✅ 안동한지 홈페이지 URL 뒤에 데이터를 꼬리표로 붙임!
-    final finalQrData = 'https://andonghanji.com/board/index.php?app_data=$base64Data';
     setState(() {
       tempId = newTempId;
-      qrData = jsonEncode(payload);
+      qrData = smartQrUrl;
     });
   }
 
-  // ✅ 인더스트리얼 감성 100x80 라벨 디자인
+  // ✅ 지정해주신 5가지 컬러 팔레트 매핑 (3.0 기준 0.2 간격)
+  PdfColor _getWeightColor(double w) {
+    if (w >= 3.4) return PdfColor.fromHex('#4c3d3e'); // 가장 무거움
+    if (w >= 3.2) return PdfColor.fromHex('#383b4e');
+    if (w >= 3.0) return PdfColor.fromHex('#798e9d'); // 표준
+    if (w >= 2.8) return PdfColor.fromHex('#bab2a7');
+    return PdfColor.fromHex('#d8dddd');               // 가장 가벼움
+  }
+
+  // ✅ 어두운 배경일 때 글씨를 흰색으로 반전시키는 로직
+  PdfColor _getTextColorForWeight(double w) {
+    if (w >= 3.0) return PdfColors.white;
+    return PdfColors.black;
+  }
+
   Future<void> printQr() async {
     if (qrData == null || tempId == null) { _toast('먼저 QR을 생성하세요.'); return; }
 
-    final fontRegular = await PdfGoogleFonts.nanumGothicRegular();
-    final fontBold = await PdfGoogleFonts.nanumGothicBold();
-    final doc = pw.Document();
+    pw.Font fontBold;
+    pw.Font fontMedium;
+    pw.Font fontLight;
+    pw.MemoryImage logoImage;
 
-    final pageFormat = PdfPageFormat(100 * PdfPageFormat.mm, 80 * PdfPageFormat.mm);
+    try {
+      fontBold = pw.Font.ttf(await rootBundle.load('assets/fonts/Pretendard-Bold.ttf'));
+      fontMedium = pw.Font.ttf(await rootBundle.load('assets/fonts/Pretendard-Medium.ttf'));
+      fontLight = pw.Font.ttf(await rootBundle.load('assets/fonts/Pretendard-ExtraLight.ttf'));
+      final imageBytes = await rootBundle.load('assets/images/logo.png');
+      logoImage = pw.MemoryImage(imageBytes.buffer.asUint8List());
+    } catch (e) {
+      _toast('폰트나 이미지 파일을 찾을 수 없습니다: $e');
+      return;
+    }
+
+    final doc = pw.Document();
+    final pageFormat = PdfPageFormat(100 * PdfPageFormat.mm, 100 * PdfPageFormat.mm);
     final productName = selectedItem?.name ?? '-';
-    final isLongName = productName.length >= 8;
+    final productSku = selectedItem?.sku ?? '-';
+    final dateStr = '${producedAt?.year}.${producedAt?.month.toString().padLeft(2, '0')}.${producedAt?.day.toString().padLeft(2, '0')}';
+    final prodName = selectedProducer ?? "-";
+
+    // 무게에 따른 컬러 및 텍스트 색상 결정
+    final bgColor = _getWeightColor(weightKg);
+    final txtColor = _getTextColorForWeight(weightKg);
 
     doc.addPage(
       pw.Page(
         pageFormat: pageFormat,
-        margin: const pw.EdgeInsets.all(12),
+        margin: pw.EdgeInsets.all(3 * PdfPageFormat.mm), // 3mm 여백
         build: (pw.Context context) {
           return pw.Container(
-            decoration: pw.BoxDecoration(border: pw.Border.all(width: 2, color: PdfColors.black)),
+            decoration: pw.BoxDecoration(border: pw.Border.all(width: 1, color: PdfColors.black)), // 외곽 1pt 테두리
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.stretch,
               children: [
-                pw.Container(
-                  padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: const pw.BoxDecoration(border: pw.Border(bottom: pw.BorderSide(width: 2, color: PdfColors.black))),
-                  child: pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text('SKU: ${selectedItem?.sku ?? "-"}', style: pw.TextStyle(font: fontBold, fontSize: 11)),
-                      pw.Text('ID: $tempId', style: pw.TextStyle(font: fontBold, fontSize: 11)),
-                    ],
-                  ),
-                ),
+                // 1. 상단 구역 (이곳에만 내부 패딩을 줌으로써 하단 QR이 외곽선과 겹치게 설계)
                 pw.Expanded(
+                    child: pw.Container(
+                        padding: const pw.EdgeInsets.only(left: 8, right: 8, top: 8, bottom: 4),
+                        child: pw.Column(
+                            crossAxisAlignment: pw.CrossAxisAlignment.start,
+                            children: [
+                              pw.Container(
+                                constraints: pw.BoxConstraints(minHeight: 25 * PdfPageFormat.mm),
+                                alignment: pw.Alignment.topLeft,
+                                child: pw.Text(
+                                  productName,
+                                  style: pw.TextStyle(font: fontBold, fontSize: 36),
+                                  maxLines: 2,
+                                ),
+                              ),
+                              pw.SizedBox(height: 4),
+                              pw.Text(productSku, style: pw.TextStyle(font: fontLight, fontSize: 9)),
+                              pw.Spacer(),
+                              pw.Text(dateStr, style: pw.TextStyle(font: fontLight, fontSize: 18)),
+                            ]
+                        )
+                    )
+                ),
+
+                // 2. 가로를 가르는 1pt 굵은 선 (QR 및 생산정보 상단 선)
+                pw.Container(height: 1, color: PdfColors.black),
+
+                // 3. 하단 박스 구역 (패딩 제거)
+                pw.Container(
+                  height: 40 * PdfPageFormat.mm,
                   child: pw.Row(
                     crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                     children: [
+                      // 좌측: QR 코드 (우측 테두리만 0.5pt 적용, 나머지는 외곽선과 합체)
                       pw.Container(
-                        width: 60,
-                        decoration: const pw.BoxDecoration(border: pw.Border(right: pw.BorderSide(width: 2, color: PdfColors.black))),
-                        alignment: pw.Alignment.center,
-                        child: isLongName
-                            ? pw.Transform.rotateBox(
-                          angle: pi / 2,
-                          child: pw.Text(productName, style: pw.TextStyle(font: fontBold, fontSize: 24)),
-                        )
-                            : pw.Text(productName, style: pw.TextStyle(font: fontBold, fontSize: 24), textAlign: pw.TextAlign.center),
+                        width: 40 * PdfPageFormat.mm,
+                        decoration: pw.BoxDecoration(border: pw.Border(right: pw.BorderSide(width: 0.5, color: PdfColors.black))),
+                        padding: const pw.EdgeInsets.all(2), // QR 자체가 선에 닿지 않도록 살짝 여백
+                        child: pw.BarcodeWidget(
+                            barcode: pw.Barcode.qrCode(),
+                            data: qrData!,
+                            color: PdfColors.black
+                        ),
                       ),
+
+                      // 우측: 컬러 정보창 및 로고
                       pw.Expanded(
                         child: pw.Column(
                           crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                           children: [
-                            pw.Container(
-                              padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                              decoration: const pw.BoxDecoration(border: pw.Border(bottom: pw.BorderSide(width: 1, color: PdfColors.black))),
-                              child: pw.Text('PRODUCER :  ${selectedProducer ?? "-"}', style: pw.TextStyle(font: fontBold, fontSize: 13)),
-                            ),
-                            pw.Container(
-                              padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                              decoration: const pw.BoxDecoration(border: pw.Border(bottom: pw.BorderSide(width: 1, color: PdfColors.black))),
-                              child: pw.Text('DATE :  ${producedAt?.year}-${producedAt?.month.toString().padLeft(2, '0')}-${producedAt?.day.toString().padLeft(2, '0')}', style: pw.TextStyle(font: fontBold, fontSize: 13)),
-                            ),
+                            // 컬러 적용 스펙 영역
                             pw.Expanded(
-                              child: pw.Row(
-                                children: [
-                                  pw.Expanded(
-                                    child: pw.Container(
-                                      padding: const pw.EdgeInsets.only(left: 8, top: 4),
-                                      child: pw.Column(
-                                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                                        mainAxisAlignment: pw.MainAxisAlignment.center,
-                                        children: [
-                                          pw.Text('QTY', style: pw.TextStyle(font: fontRegular, fontSize: 10)),
-                                          pw.Text('$qty EA', style: pw.TextStyle(font: fontBold, fontSize: 16)),
-                                          pw.SizedBox(height: 8),
-                                          pw.Text('WEIGHT', style: pw.TextStyle(font: fontRegular, fontSize: 10)),
-                                          pw.Text('${weightKg.toStringAsFixed(2)} KG', style: pw.TextStyle(font: fontBold, fontSize: 16)),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  pw.Container(
-                                    width: 40 * PdfPageFormat.mm,
-                                    height: 40 * PdfPageFormat.mm,
-                                    padding: const pw.EdgeInsets.all(4),
-                                    decoration: const pw.BoxDecoration(border: pw.Border(left: pw.BorderSide(width: 1, color: PdfColors.black))),
-                                    child: pw.BarcodeWidget(barcode: pw.Barcode.qrCode(), data: qrData!, width: 38 * PdfPageFormat.mm, height: 38 * PdfPageFormat.mm),
-                                  ),
-                                ],
+                              child: pw.Container(
+                                color: bgColor,
+                                padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                child: pw.Column(
+                                  mainAxisAlignment: pw.MainAxisAlignment.center,
+                                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                                  children: [
+                                    pw.Text('수량 :       $qty EA', style: pw.TextStyle(font: fontMedium, fontSize: 14, color: txtColor)),
+                                    pw.SizedBox(height: 2),
+                                    pw.Text('중량 :       ${weightKg.toStringAsFixed(1)} kg', style: pw.TextStyle(font: fontMedium, fontSize: 14, color: txtColor)),
+                                    pw.SizedBox(height: 2),
+                                    pw.Text('생산 :  $prodName 장인', style: pw.TextStyle(font: fontMedium, fontSize: 14, color: txtColor)),
+                                  ],
+                                ),
                               ),
+                            ),
+
+                            // 로고 상단 0.5pt 얇은 선
+                            pw.Container(height: 0.5, color: PdfColors.black),
+
+                            // 로고 영역 (더 작게 넉넉한 여백 추가)
+                            pw.Container(
+                              height: 14 * PdfPageFormat.mm,
+                              color: PdfColors.white,
+                              alignment: pw.Alignment.bottomRight, // 우측 하단 정렬
+                              padding: const pw.EdgeInsets.only(right: 12, bottom: 4, top: 4, left: 4), // 넉넉한 여백
+                              child: pw.Image(logoImage, fit: pw.BoxFit.contain),
                             ),
                           ],
                         ),
@@ -347,11 +388,11 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
             padding: const EdgeInsets.symmetric(horizontal: 4.0),
             child: ChoiceChip(
                 showCheckmark: false,
-                label: Center(child: Text(c, style: TextStyle(fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.white : Colors.black87))),
+                label: Center(child: Text(c, style: TextStyle(fontSize: 14, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.blue.shade900 : Colors.black87))),
                 selected: isSelected,
-                selectedColor: Colors.blue.shade700,
+                selectedColor: Colors.grey.shade200,
                 backgroundColor: Colors.white,
-                side: BorderSide(color: isSelected ? Colors.blue.shade700 : Colors.grey.shade300),
+                side: BorderSide(color: isSelected ? Colors.grey.shade400 : Colors.grey.shade200),
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 onSelected: (_) => _setCategory(c)
@@ -371,9 +412,9 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
                 label: Center(child: Text(a, style: TextStyle(fontSize: 13, color: isSelected ? Colors.blue.shade900 : (enabled ? Colors.black87 : Colors.grey.shade400)))),
                 selected: isSelected,
                 onSelected: enabled ? (_) => _toggleAttr(a) : null,
-                selectedColor: Colors.blue.shade50,
+                selectedColor: Colors.grey.shade200,
                 backgroundColor: Colors.white,
-                shape: StadiumBorder(side: BorderSide(color: isSelected ? Colors.blue.shade400 : Colors.grey.shade200))
+                shape: StadiumBorder(side: BorderSide(color: isSelected ? Colors.grey.shade400 : Colors.grey.shade200))
             )
         )
     );
@@ -381,160 +422,139 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
 
   Widget _buildInputForm() {
     final dateText = producedAt == null ? '생산일자 선택' : '${producedAt!.year}-${producedAt!.month.toString().padLeft(2, '0')}-${producedAt!.day.toString().padLeft(2, '0')}';
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('생산자 *', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        Row(
-            children: producers.map((p) {
-              final isSelected = selectedProducer == p;
-              return Expanded(
-                  child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                      child: Opacity(
-                          opacity: isSelected ? 1.0 : 0.6,
-                          child: ChoiceChip(
-                              showCheckmark: false,
-                              label: Center(child: Text(p, textAlign: TextAlign.center, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.blue.shade900 : Colors.black87))),
-                              selected: isSelected,
-                              selectedColor: Colors.blue.shade100,
-                              backgroundColor: Colors.grey.shade200,
-                              side: BorderSide.none,
-                              onSelected: (_) {
-                                setState(() => selectedProducer = p);
-                                _saveData('prod_producer', p);
-                              }
-                          )
-                      )
+
+    // ✅ 폼 영역의 카드들을 하얀색으로 감싸서 다크 배경에서도 잘 보이게 설정
+    return Container(
+      margin: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 10)]),
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text('생산자 *', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(
+              children: producers.map((p) {
+                final isSelected = selectedProducer == p;
+                return Expanded(
+                    child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                        child: Opacity(
+                            opacity: isSelected ? 1.0 : 0.6,
+                            child: ChoiceChip(
+                                showCheckmark: false,
+                                label: Center(child: Text(p, textAlign: TextAlign.center, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.blue.shade900 : Colors.black87))),
+                                selected: isSelected,
+                                selectedColor: Colors.grey.shade200,
+                                backgroundColor: Colors.grey.shade100,
+                                side: BorderSide.none,
+                                onSelected: (_) { setState(() => selectedProducer = p); _saveData('prod_producer', p); }
+                            )
+                        )
+                    )
+                );
+              }).toList()
+          ),
+          const SizedBox(height: 16),
+
+          const Text('생산일자 *', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(onPressed: pickDate, icon: const Icon(Icons.calendar_month_outlined), label: Text(dateText, style: const TextStyle(fontSize: 15))),
+          const SizedBox(height: 16),
+
+          const Text('품목 카테고리', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(children: productCategories.sublist(0, 4).map((c) => _buildCategoryChip(c)).toList()),
+          const SizedBox(height: 8),
+          Row(children: [...productCategories.sublist(4, 7).map((c) => _buildCategoryChip(c)), const Spacer()]),
+          const SizedBox(height: 20),
+
+          const Text('품목 속성 (세부 필터)', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(children: allProductAttrs.sublist(0, 4).map((a) => _buildAttrChip(a)).toList()),
+          const SizedBox(height: 8),
+          Row(children: allProductAttrs.sublist(4, 8).map((a) => _buildAttrChip(a)).toList()),
+          const SizedBox(height: 20),
+
+          InputDecorator(
+              decoration: InputDecoration(labelText: '품목 선택 *', hintText: '필터링된 품목: 총 ${_filteredItems.length}개 대기중', border: const OutlineInputBorder()),
+              child: DropdownButtonHideUnderline(
+                  child: DropdownButton<ProductItem>(
+                      value: selectedItem, isExpanded: true,
+                      items: _filteredItems.map((it) => DropdownMenuItem(value: it, child: Text('${it.name}   (${it.sku})'))).toList(),
+                      onChanged: (v) => setState(() => selectedItem = v)
                   )
-              );
-            }).toList()
-        ),
-        const SizedBox(height: 16),
-
-        const Text('생산일자 *', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(onPressed: pickDate, icon: const Icon(Icons.calendar_month_outlined), label: Text(dateText, style: const TextStyle(fontSize: 15))),
-        const SizedBox(height: 16),
-
-        const Text('품목 카테고리', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        Row(children: productCategories.sublist(0, 4).map((c) => _buildCategoryChip(c)).toList()),
-        const SizedBox(height: 8),
-        Row(children: [...productCategories.sublist(4, 7).map((c) => _buildCategoryChip(c)), const Spacer()]),
-        const SizedBox(height: 20),
-
-        const Text('품목 속성 (세부 필터)', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        Row(children: allProductAttrs.sublist(0, 4).map((a) => _buildAttrChip(a)).toList()),
-        const SizedBox(height: 8),
-        Row(children: allProductAttrs.sublist(4, 8).map((a) => _buildAttrChip(a)).toList()),
-        const SizedBox(height: 20),
-
-        DropdownButtonFormField<ProductItem>(
-            value: selectedItem,
-            decoration: InputDecoration(labelText: '품목 선택 *', hintText: '필터링된 품목: 총 ${_filteredItems.length}개 대기중', border: const OutlineInputBorder()),
-            isExpanded: true,
-            items: _filteredItems.map((it) => DropdownMenuItem(value: it, child: Text('${it.name}   (${it.sku})'))).toList(),
-            onChanged: (v) => setState(() => selectedItem = v)
-        ),
-        const SizedBox(height: 16),
-
-        const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        Row(
-            children: [
-              ChoiceChip(
-                  showCheckmark: false,
-                  label: const Text('100장 (1 Pack)'),
-                  selected: qty == 100,
-                  selectedColor: Colors.blue.shade100,
-                  onSelected: (_) { setState(() => qty = 100); _saveData('prod_qty', 100); }
-              ),
-              const SizedBox(width: 8),
-              ChoiceChip(
-                  showCheckmark: false,
-                  label: Text(qty == 100 ? '100장 미만 직접입력' : '낱장: $qty장 (변경)'),
-                  selected: qty != 100,
-                  selectedColor: Colors.blue.shade100,
-                  onSelected: (_) async { await _pickQtyDialUnder100(); }
               )
-            ]
-        ),
-        const SizedBox(height: 16),
+          ),
+          const SizedBox(height: 16),
 
-        const Text('무게', style: TextStyle(fontWeight: FontWeight.w800)),
-        const SizedBox(height: 8),
-        Card(
-          elevation: 0,
-          color: Colors.blue.shade50.withValues(alpha: 0.5),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.blue.shade100)),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+          const Text('수량', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(
               children: [
-                Text('총중량: ${weightKg.toStringAsFixed(2)} kg', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue.shade900, fontSize: 15)),
-                const SizedBox(height: 12),
-                // ✅ FittedBox와 Row를 결합하여 절대! 두 줄로 넘어가지 않도록 강제 고정
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    children: [
-                      ActionChip(label: const Text('-0.3'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.3)),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('-0.2'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.2)),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('-0.1'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.1)),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('3.0', style: TextStyle(fontWeight: FontWeight.bold)), backgroundColor: Colors.white, visualDensity: VisualDensity.compact, onPressed: () { setState(() => weightKg = 3.0); _saveData('prod_weight', 3.0); }),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('+0.1'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.1)),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('+0.2'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.2)),
-                      const SizedBox(width: 4),
-                      ActionChip(label: const Text('+0.3'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.3)),
-                    ],
+                ChoiceChip(showCheckmark: false, label: const Text('100장 (1 Pack)'), selected: qty == 100, selectedColor: Colors.grey.shade200, onSelected: (_) { setState(() => qty = 100); _saveData('prod_qty', 100); }),
+                const SizedBox(width: 8),
+                ChoiceChip(showCheckmark: false, label: Text(qty == 100 ? '100장 미만 직접입력' : '낱장: $qty장 (변경)'), selected: qty != 100, selectedColor: Colors.grey.shade200, onSelected: (_) async { await _pickQtyDialUnder100(); })
+              ]
+          ),
+          const SizedBox(height: 16),
+
+          const Text('무게', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Card(
+            elevation: 0, color: Colors.grey.shade100, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('총중량: ${weightKg.toStringAsFixed(2)} kg', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue.shade900, fontSize: 15)),
+                  const SizedBox(height: 12),
+                  FittedBox(
+                    fit: BoxFit.scaleDown, alignment: Alignment.centerLeft,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      children: [
+                        ActionChip(label: const Text('-0.3'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.3)), const SizedBox(width: 4),
+                        ActionChip(label: const Text('-0.2'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.2)), const SizedBox(width: 4),
+                        ActionChip(label: const Text('-0.1'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(-0.1)), const SizedBox(width: 4),
+                        ActionChip(label: const Text('3.0', style: TextStyle(fontWeight: FontWeight.bold)), backgroundColor: Colors.white, visualDensity: VisualDensity.compact, onPressed: () { setState(() => weightKg = 3.0); _saveData('prod_weight', 3.0); }), const SizedBox(width: 4),
+                        ActionChip(label: const Text('+0.1'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.1)), const SizedBox(width: 4),
+                        ActionChip(label: const Text('+0.2'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.2)), const SizedBox(width: 4),
+                        ActionChip(label: const Text('+0.3'), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact, onPressed: () => _applyWeightDelta(0.3)),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 20),
+          const SizedBox(height: 20),
 
-        FilledButton.icon(
-            onPressed: generateQr,
-            icon: const Icon(Icons.qr_code_2_outlined),
-            label: const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('QR 생성', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))
-        ),
+          FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF4c3d3e)), // 다크 브라운 포인트 컬러
+              onPressed: generateQr, icon: const Icon(Icons.qr_code_2_outlined),
+              label: const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('QR 생성', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))
+          ),
 
-        if (MediaQuery.of(context).size.width < 800) ...[
-          const SizedBox(height: 24),
-          _buildQrResult(),
-        ]
-      ],
+          if (MediaQuery.of(context).size.width < 800) ...[ const SizedBox(height: 24), _buildQrResult() ]
+        ],
+      ),
     );
   }
 
   Widget _buildQrResult() {
-    if (qrData == null) {
-      return const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('입력 후 [QR 생성]을 누르세요.', style: TextStyle(color: Colors.grey))));
-    }
+    if (qrData == null) return const Center(child: Padding(padding: EdgeInsets.all(32), child: Text('입력 후 [QR 생성]을 누르세요.', style: TextStyle(color: Colors.white70))));
     return Column(
         children: [
           Container(
               padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10)]),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 10)]),
               child: QrImageView(data: qrData!, size: 200)
           ),
           const SizedBox(height: 20),
           FilledButton.icon(
-              onPressed: printQr,
-              icon: const Icon(Icons.print),
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF383b4e)),
+              onPressed: printQr, icon: const Icon(Icons.print),
               label: const Padding(padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12), child: Text('라벨 프린터로 인쇄', style: TextStyle(fontSize: 16)))
           ),
           const SizedBox(height: 24)
@@ -546,24 +566,32 @@ class _ProductQrCreateScreenState extends State<ProductQrCreateScreen> with Auto
   Widget build(BuildContext context) {
     super.build(context);
     _syncSelectedItemWithFilteredList();
+
+    // ✅ 앱 전역 배경 컬러 (STONE SHADOW 적용) 및 텍스쳐 세팅
     return Scaffold(
-        backgroundColor: Colors.grey.shade50,
-        body: LayoutBuilder(
-            builder: (context, constraints) {
-              final isWide = constraints.maxWidth >= 800;
-              if (isWide) {
-                return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(flex: 3, child: _buildInputForm()),
-                      const VerticalDivider(width: 1),
-                      Expanded(flex: 2, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.only(top: 32), child: _buildQrResult())))
-                    ]
-                );
-              } else {
-                return _buildInputForm();
+        backgroundColor: const Color(0xFF586B54),
+        body: Container(
+          decoration: const BoxDecoration(
+            // 💡 배경 질감(텍스처) 이미지가 있으시면 아래 코드를 주석 해제하고 경로를 맞춰주시면 돌/종이 질감이 쫙 깔립니다.
+            // image: DecorationImage(image: AssetImage('assets/images/texture.png'), repeat: ImageRepeat.repeat),
+          ),
+          child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isWide = constraints.maxWidth >= 800;
+                if (isWide) {
+                  return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 3, child: _buildInputForm()),
+                        const VerticalDivider(width: 1, color: Colors.white30),
+                        Expanded(flex: 2, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.only(top: 32), child: _buildQrResult())))
+                      ]
+                  );
+                } else {
+                  return _buildInputForm();
+                }
               }
-            }
+          ),
         )
     );
   }
