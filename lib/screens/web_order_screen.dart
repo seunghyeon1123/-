@@ -25,7 +25,10 @@ class OrderItemRow {
   double get total => supplyPrice + vat;
 }
 
-class _WebOrderScreenState extends State<WebOrderScreen> {
+class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAliveClientMixin {
+  // 2. 이 한 줄을 바로 아래에 추가 (상태 유지 활성화)
+  @override
+  bool get wantKeepAlive => true;
   static const String WEBAPP_URL = AppConfig.webAppUrl;
 
   final Color stoneShadow = const Color(0xFF586B54);
@@ -168,7 +171,10 @@ class _WebOrderScreenState extends State<WebOrderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // 반드시 첫 번째 줄에 위치해야 합니다!
+
     final filteredCustomers = searchCtrl.text.isEmpty
+// ... 중략 ...
         ? <Map<String,dynamic>>[]
         : customers.where((c) => (c["name"] ?? "").toString().contains(searchCtrl.text) || (c["phone"] ?? "").toString().contains(searchCtrl.text)).toList();
 

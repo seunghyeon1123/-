@@ -8,6 +8,7 @@ import 'screens/inbound_scan_screen.dart';
 import 'screens/outbound_scan_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/web_order_screen.dart';
+import 'screens/work_order_screen.dart'; // 🟢 신규: 작업 지시 화면
 
 void main() {
   runApp(const MyApp());
@@ -41,22 +42,24 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
 
-    // ✅ 1. 탭 메뉴 리스트 구성 (웹이면 입출고 탭 제외)
+    // ✅ 1. 탭 메뉴 리스트 구성 (현장 작업자용 '작업지시' 탭 추가)
     final List<Tab> tabs = [
+      if (!kIsWeb) const Tab(icon: Icon(Icons.assignment), text: '작업 지시'), // 🟢 모바일 첫 화면으로 배치!
       const Tab(icon: Icon(Icons.qr_code_2), text: '생산 QR'),
       const Tab(icon: Icon(Icons.location_on), text: '위치 QR'),
-      if (!kIsWeb) const Tab(icon: Icon(Icons.login), text: '입고(스캔)'), // 모바일에서만 보임
-      if (!kIsWeb) const Tab(icon: Icon(Icons.logout), text: '출고(스캔)'), // 모바일에서만 보임
+      if (!kIsWeb) const Tab(icon: Icon(Icons.login), text: '입고(스캔)'),
+      if (!kIsWeb) const Tab(icon: Icon(Icons.logout), text: '출고(스캔)'),
       const Tab(icon: Icon(Icons.inventory_2_outlined), text: '재고조회'),
       const Tab(icon: Icon(Icons.shopping_cart_checkout), text: '주문 입력(웹)'),
     ];
 
-    // ✅ 2. 실제 화면 리스트 구성 (웹이면 입출고 화면 제외)
+    // ✅ 2. 실제 화면 리스트 구성
     final List<Widget> tabViews = [
+      if (!kIsWeb) const WorkOrderScreen(), // 🟢 모바일 첫 화면 연결
       const ProductQrCreateScreen(),
       const LocationQrCreateScreen(),
-      if (!kIsWeb) const InboundScanScreen(),  // 모바일에서만 연결
-      if (!kIsWeb) const OutboundScanScreen(), // 모바일에서만 연결
+      if (!kIsWeb) const InboundScanScreen(),
+      if (!kIsWeb) const OutboundScanScreen(),
       const InventoryScreen(),
       const WebOrderScreen(),
     ];
