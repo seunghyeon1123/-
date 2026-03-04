@@ -44,7 +44,7 @@ class _MainScreenState extends State<MainScreen> {
 
     // ✅ 1. 탭 메뉴 리스트 구성 (현장 작업자용 '작업지시' 탭 추가)
     final List<Tab> tabs = [
-      if (!kIsWeb) const Tab(icon: Icon(Icons.assignment), text: '작업 지시'), // 🟢 모바일 첫 화면으로 배치!
+      if (!kIsWeb) const Tab(icon: Icon(Icons.assignment), text: '주문현황'), // 🟢 모바일 첫 화면으로 배치!
       const Tab(icon: Icon(Icons.qr_code_2), text: '생산 QR'),
       const Tab(icon: Icon(Icons.location_on), text: '위치 QR'),
       if (!kIsWeb) const Tab(icon: Icon(Icons.login), text: '입고(스캔)'),

@@ -26,7 +26,6 @@ class OrderItemRow {
 }
 
 class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAliveClientMixin {
-  // 2. 이 한 줄을 바로 아래에 추가 (상태 유지 활성화)
   @override
   bool get wantKeepAlive => true;
   static const String WEBAPP_URL = AppConfig.webAppUrl;
@@ -36,12 +35,12 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
 
   bool isLoading = false;
   List<Map<String, dynamic>> customers = [];
+  List<dynamic> currentInventory = []; // 재고 확인용
   Map<String, dynamic>? selectedCustomer;
 
   final searchCtrl = TextEditingController();
   final parseCtrl = TextEditingController();
 
-  // 고객 정보 수동 입력용
   final nameCtrl = TextEditingController();
   final phoneCtrl = TextEditingController();
   final addressCtrl = TextEditingController();
@@ -51,7 +50,7 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
   @override
   void initState() {
     super.initState();
-    _fetchCustomers();
+    _fetchInitialData();
   }
 
   Future<Map<String, dynamic>> _post(Map<String, dynamic> payload) async {
@@ -64,60 +63,117 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
     throw Exception('HTTP Error: ${res.statusCode}');
   }
 
-  Future<void> _fetchCustomers() async {
+  // 고객 목록과 재고를 한 번에 불러옴
+  Future<void> _fetchInitialData() async {
     setState(() => isLoading = true);
     try {
-      final res = await _post({"action": "getCustomers"});
-      if (res["ok"] == true) {
-        setState(() {
-          customers = List<Map<String, dynamic>>.from(res["customers"] ?? []);
-        });
-      }
+      final resCust = await _post({"action": "getCustomers"});
+      final resInv = await _post({"action": "inventory"}); // 전체 재고 불러오기
+
+      setState(() {
+        if (resCust["ok"] == true) customers = List<Map<String, dynamic>>.from(resCust["customers"] ?? []);
+        if (resInv["ok"] == true) currentInventory = resInv["items"] ?? [];
+      });
     } catch (e) {
-      debugPrint("고객 목록 불러오기 실패: $e");
+      debugPrint("초기 데이터 불러오기 실패: $e");
     } finally {
       setState(() => isLoading = false);
     }
   }
 
-  // 🟢 스마트 문자열 파싱 (단순 키워드 매칭)
-  void _parseText() {
+  void _parseText() async {
     final text = parseCtrl.text;
     if (text.isEmpty) return;
 
-    List<OrderItemRow> newRows = [];
+    setState(() => isLoading = true);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AI가 주문 문맥을 분석 중입니다... 🤖')));
 
-    // 임시 파싱 로직: catalogItems의 품목명이 텍스트에 포함되어 있는지 검사
-    for (var product in catalogItems) {
-      if (text.contains(product.name)) {
-        // 품목명 뒤에 나오는 숫자(장, 개 등)를 정규식으로 대략적 추출
-        RegExp exp = RegExp('${product.name}.*?([0-9]+)[장|개|박스]');
-        var match = exp.firstMatch(text);
-        int parsedQty = 1;
-        if (match != null && match.groupCount >= 1) {
-          parsedQty = int.tryParse(match.group(1) ?? '1') ?? 1;
-        }
-        newRows.add(OrderItemRow(selectedProduct: product, qty: parsedQty));
+    try {
+      final res = await _post({
+        "action": "parseOrder",
+        "text": text
+      });
+
+      if (res["ok"] == true) {
+        final data = res["data"];
+
+        setState(() {
+          if (data["customerName"] != null && data["customerName"].toString().isNotEmpty) nameCtrl.text = data["customerName"];
+          if (data["phone"] != null && data["phone"].toString().isNotEmpty) phoneCtrl.text = data["phone"];
+          if (data["address"] != null && data["address"].toString().isNotEmpty) addressCtrl.text = data["address"];
+
+          List<OrderItemRow> newRows = [];
+          final items = data["items"] as List<dynamic>? ?? [];
+
+          for (var item in items) {
+            String itemName = item["name"].toString();
+            int qty = int.tryParse(item["qty"].toString()) ?? 1;
+
+            ProductItem? matchedProduct;
+            for (var product in catalogItems) {
+              String pureProductName = product.name.replaceAll(' ', '');
+              String pureItemName = itemName.replaceAll(' ', '');
+
+              if (pureProductName.contains(pureItemName) || pureItemName.contains(pureProductName)) {
+                matchedProduct = product;
+                break;
+              }
+            }
+            newRows.add(OrderItemRow(selectedProduct: matchedProduct, qty: qty));
+          }
+
+          if (newRows.isNotEmpty) orderRows = newRows;
+        });
+
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✨ AI 분석 완료! 데이터가 폼에 입력되었습니다.')));
+      } else {
+        throw Exception(res["error"]);
       }
-    }
-
-    if (newRows.isNotEmpty) {
-      setState(() => orderRows = newRows);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('문장 분석 완료! 명세표에 품목이 추가되었습니다.')));
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('등록된 품목을 찾지 못했습니다. 수동으로 입력해주세요.')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('AI 분석 실패: $e')));
+    } finally {
+      setState(() => isLoading = false);
     }
   }
 
+// 🟢 1. 새롭게 추가된 기능: 단골(주소록) 고객 정보만 시트에 따로 저장/수정
+  Future<void> _saveCustomer() async {
+    if (nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('상호명/이름을 먼저 입력해주세요.', style: TextStyle(fontSize: 18))));
+      return;
+    }
+    setState(() => isLoading = true);
+    try {
+      final res = await _post({
+        "action": "saveCustomer",
+        "customerName": nameCtrl.text.trim(),
+        "phone": phoneCtrl.text.trim(),
+        "address": addressCtrl.text.trim()
+      });
+      if (res["ok"] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res["message"], style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))));
+        _fetchInitialData(); // 저장 후 고객 검색 목록을 실시간으로 새로고침
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('고객 저장 실패: $e', style: const TextStyle(fontSize: 18))));
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+
+  // 🔵 2. 기존의 완벽한 기능: 거래명세표 주문 등록 및 현장(창고)으로 작업 지시 전송
   Future<void> _submitOrder() async {
     if (nameCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('고객명/상호명을 입력하세요.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('고객명/상호명을 입력하세요.', style: TextStyle(fontSize: 18))));
       return;
     }
 
     final validRows = orderRows.where((r) => r.selectedProduct != null).toList();
     if (validRows.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('최소 1개의 품목을 선택하세요.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('최소 1개의 품목을 선택하세요.', style: TextStyle(fontSize: 18))));
       return;
     }
 
@@ -144,7 +200,7 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
 
       final res = await _post(payload);
       if (res["ok"] == true) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('주문이 등록되었습니다. (주문번호: ${res["orderNo"]})')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('주문이 정상적으로 등록되었습니다.', style: TextStyle(fontSize: 18))));
         setState(() {
           orderRows = [OrderItemRow()];
           parseCtrl.clear();
@@ -153,7 +209,7 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
         throw Exception(res["error"]);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('주문 등록 실패: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('주문 등록 실패: $e', style: const TextStyle(fontSize: 18))));
     } finally {
       setState(() => isLoading = false);
     }
@@ -169,19 +225,25 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
     });
   }
 
+  // 선택된 품목의 현재 총 재고를 계산하는 함수
+  int _getStockForProduct(String? sku) {
+    if (sku == null) return 0;
+    final itemInv = currentInventory.where((inv) => inv["sku"] == sku).toList();
+    return itemInv.fold(0, (sum, item) => sum + (item["qty"] as num).toInt());
+  }
+
   @override
   Widget build(BuildContext context) {
-    super.build(context); // 반드시 첫 번째 줄에 위치해야 합니다!
+    super.build(context);
 
     final filteredCustomers = searchCtrl.text.isEmpty
-// ... 중략 ...
         ? <Map<String,dynamic>>[]
         : customers.where((c) => (c["name"] ?? "").toString().contains(searchCtrl.text) || (c["phone"] ?? "").toString().contains(searchCtrl.text)).toList();
 
     return Scaffold(
       backgroundColor: hanjiIvory,
       appBar: AppBar(
-        title: const Text('주문서 입력 (거래명세표)'),
+        title: const Text('주문서 입력 (거래명세표)', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         backgroundColor: hanjiIvory,
         elevation: 0,
         foregroundColor: stoneShadow,
@@ -191,7 +253,6 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
           : Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 왼쪽 패널: 고객 정보 & 문자열 파싱
           Expanded(
             flex: 1,
             child: Container(
@@ -200,7 +261,7 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text('1. 고객 정보 입력', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: stoneShadow)),
+                  Text('1. 고객 정보 입력', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: stoneShadow)),
                   const SizedBox(height: 12),
                   TextField(
                     controller: searchCtrl,
@@ -222,8 +283,8 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                         itemBuilder: (context, i) {
                           final c = filteredCustomers[i];
                           return ListTile(
-                            title: Text(c["name"]),
-                            subtitle: Text(c["phone"]),
+                            title: Text(c["name"], style: const TextStyle(fontSize: 18)),
+                            subtitle: Text(c["phone"], style: const TextStyle(fontSize: 16)),
                             onTap: () => _selectCustomer(c),
                           );
                         },
@@ -236,11 +297,24 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                   const SizedBox(height: 8),
                   TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: '주소', filled: true, fillColor: Colors.white)),
 
+                  // 🟢 여기에 버튼 추가! (어르신들도 누르기 편하게 큼직하게)
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _saveCustomer,
+                    icon: const Icon(Icons.save_alt, size: 24),
+                    label: const Text('단골(주소록)에 저장 / 주소 수정', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: stoneShadow, width: 2),
+                      foregroundColor: stoneShadow,
+                    ),
+                  ),
+
                   const Divider(height: 40),
 
-                  Text('2. 스마트 주문 입력 (선택)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: stoneShadow)),
+                  Text('2. 스마트 주문 입력 (AI 자동 완성)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: stoneShadow)),
                   const SizedBox(height: 8),
-                  const Text('카톡이나 문자로 받은 내용을 그대로 붙여넣으세요.', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  const Text('카톡이나 문자로 받은 내용을 그대로 붙여넣으세요.', style: TextStyle(color: Colors.grey, fontSize: 14)),
                   const SizedBox(height: 8),
                   TextField(
                     controller: parseCtrl,
@@ -254,16 +328,15 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                   const SizedBox(height: 8),
                   ElevatedButton.icon(
                     onPressed: _parseText,
-                    icon: const Icon(Icons.auto_awesome),
-                    label: const Text('주문 분석하기'),
-                    style: ElevatedButton.styleFrom(backgroundColor: stoneShadow, foregroundColor: Colors.white),
+                    icon: const Icon(Icons.auto_awesome, size: 24),
+                    label: const Text('AI 주문 자동 분석하기', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(backgroundColor: stoneShadow, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16)),
                   )
                 ],
               ),
             ),
           ),
 
-          // 오른쪽 패널: 거래명세표 폼
           Expanded(
             flex: 2,
             child: Padding(
@@ -274,11 +347,11 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('거래명세표 세부내역', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: stoneShadow)),
+                      Text('거래명세표 세부내역', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: stoneShadow)),
                       ElevatedButton.icon(
                         onPressed: () => setState(() => orderRows.add(OrderItemRow())),
-                        icon: const Icon(Icons.add), label: const Text('행 추가'),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: stoneShadow),
+                        icon: const Icon(Icons.add), label: const Text('행 추가', style: TextStyle(fontSize: 16)),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: stoneShadow, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
                       )
                     ],
                   ),
@@ -290,7 +363,10 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                       separatorBuilder: (context, index) => const Divider(),
                       itemBuilder: (context, index) {
                         final row = orderRows[index];
+                        final currentStock = _getStockForProduct(row.selectedProduct?.sku);
+
                         return Row(
+                          crossAxisAlignment: CrossAxisAlignment.start, // 위쪽 정렬
                           children: [
                             Expanded(
                               flex: 3,
@@ -300,16 +376,6 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                                 isExpanded: true,
                                 items: catalogItems.map((p) => DropdownMenuItem(value: p, child: Text('${p.name} (${p.sku})'))).toList(),
                                 onChanged: (v) => setState(() => row.selectedProduct = v),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              flex: 1,
-                              child: TextFormField(
-                                initialValue: row.weightKg.toString(),
-                                decoration: const InputDecoration(labelText: '무게(kg)', filled: true, fillColor: Colors.white),
-                                keyboardType: TextInputType.number,
-                                onChanged: (v) => setState(() => row.weightKg = double.tryParse(v) ?? 3.0),
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -333,22 +399,30 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                               ),
                             ),
                             const SizedBox(width: 8),
+                            // 🟢 비고 (재고 상태 표시) 칸 추가
                             Expanded(
                               flex: 1,
                               child: Container(
-                                padding: const EdgeInsets.all(8),
-                                color: Colors.grey.shade100,
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text('공급가: ${row.supplyPrice.toInt()}'),
-                                    Text('부가세: ${row.vat.toInt()}'),
-                                  ],
+                                padding: const EdgeInsets.all(12),
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                    color: row.selectedProduct == null ? Colors.grey.shade100 : (currentStock < row.qty ? Colors.red.shade50 : Colors.green.shade50),
+                                    border: Border.all(color: Colors.grey.shade300)
+                                ),
+                                child: Text(
+                                  row.selectedProduct == null ? '품목 선택' :
+                                  (currentStock < row.qty ? '⚠️ 재고부족\n(보유: $currentStock)' : '재고 충분\n(보유: $currentStock)'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                      color: row.selectedProduct == null ? Colors.grey : (currentStock < row.qty ? Colors.red : Colors.green.shade700)
+                                  ),
                                 ),
                               ),
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              icon: const Icon(Icons.delete_outline, color: Colors.red, size: 30),
                               onPressed: () => setState(() => orderRows.removeAt(index)),
                             )
                           ],
@@ -363,16 +437,16 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('총 합계 금액:', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: stoneShadow)),
-                        Text('${orderRows.fold(0.0, (sum, r) => sum + r.total).toInt()} 원', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: stoneShadow)),
+                        Text('총 합계 금액:', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: stoneShadow)),
+                        Text('${orderRows.fold(0.0, (sum, r) => sum + r.total).toInt()} 원', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: stoneShadow)),
                       ],
                     ),
                   ),
                   const SizedBox(height: 16),
                   FilledButton(
                     onPressed: isLoading ? null : _submitOrder,
-                    style: FilledButton.styleFrom(backgroundColor: stoneShadow, padding: const EdgeInsets.symmetric(vertical: 20)),
-                    child: const Text('주문 등록 및 현장 작업 지시', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    style: FilledButton.styleFrom(backgroundColor: stoneShadow, padding: const EdgeInsets.symmetric(vertical: 24)),
+                    child: const Text('주문 등록 (주문 현황으로 전송)', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                   )
                 ],
               ),
