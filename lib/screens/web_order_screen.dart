@@ -81,60 +81,61 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
     }
   }
 
-  void _parseText() async {
+// 🟢 최신 2.0-flash 모델 적용 코드
+// 🟢 100% 무료 자체 내장 파서 (구글 AI 서버 접속 안 함)
+  void _parseText() {
     final text = parseCtrl.text;
     if (text.isEmpty) return;
 
-    setState(() => isLoading = true);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AI가 주문 문맥을 분석 중입니다... 🤖')));
+    // 1. 전화번호 추출 (010-XXXX-XXXX 패턴)
+    final phoneRegExp = RegExp(r'01[016789][- .]?\d{3,4}[- .]?\d{4}');
+    final phoneMatch = phoneRegExp.firstMatch(text);
+    if (phoneMatch != null) {
+      phoneCtrl.text = phoneMatch.group(0)!;
+    }
 
-    try {
-      final res = await _post({
-        "action": "parseOrder",
-        "text": text
-      });
+    // 2. 주소 대략적 추출 (시/도, 구/군, 동/로/길 패턴)
+    final addressRegExp = RegExp(r'([가-힣]+(시|도)\s+[가-힣]+(구|군|시)\s+[가-힣]+(동|면|리|읍|길|로)\s*\d*(-\d+)?)');
+    final addressMatch = addressRegExp.firstMatch(text);
+    if (addressMatch != null) {
+      addressCtrl.text = addressMatch.group(0)!;
+    }
 
-      if (res["ok"] == true) {
-        final data = res["data"];
+    // 3. 상호명 추출 (문맥상 '~~로' 앞의 단어 추정)
+    final nameRegExp = RegExp(r'([가-힣a-zA-Z0-9]+)(으)?로\s+(보내|배송|출고|부탁)');
+    final nameMatch = nameRegExp.firstMatch(text);
+    if (nameMatch != null) {
+      nameCtrl.text = nameMatch.group(1)!;
+    }
 
-        setState(() {
-          if (data["customerName"] != null && data["customerName"].toString().isNotEmpty) nameCtrl.text = data["customerName"];
-          if (data["phone"] != null && data["phone"].toString().isNotEmpty) phoneCtrl.text = data["phone"];
-          if (data["address"] != null && data["address"].toString().isNotEmpty) addressCtrl.text = data["address"];
+    // 4. 품목 및 수량 추출
+    List<OrderItemRow> newRows = [];
+    String pureText = text.replaceAll(' ', '');
 
-          List<OrderItemRow> newRows = [];
-          final items = data["items"] as List<dynamic>? ?? [];
+    for (var product in catalogItems) {
+      String pureName = product.name.replaceAll(' ', '');
 
-          for (var item in items) {
-            String itemName = item["name"].toString();
-            int qty = int.tryParse(item["qty"].toString()) ?? 1;
+      if (pureText.contains(pureName) || text.contains(product.name)) {
+        // 품목명 뒤에 나오는 숫자 최대 4자리 추출
+        RegExp exp = RegExp('${product.name}.*?([0-9]{1,4})\\s*(장|개|박스|롤|권|연)');
+        var match = exp.firstMatch(text);
 
-            ProductItem? matchedProduct;
-            for (var product in catalogItems) {
-              String pureProductName = product.name.replaceAll(' ', '');
-              String pureItemName = itemName.replaceAll(' ', '');
-
-              if (pureProductName.contains(pureItemName) || pureItemName.contains(pureProductName)) {
-                matchedProduct = product;
-                break;
-              }
-            }
-            newRows.add(OrderItemRow(selectedProduct: matchedProduct, qty: qty));
-          }
-
-          if (newRows.isNotEmpty) orderRows = newRows;
-        });
-
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✨ AI 분석 완료! 데이터가 폼에 입력되었습니다.')));
-      } else {
-        throw Exception(res["error"]);
+        int parsedQty = 1;
+        if (match != null && match.groupCount >= 1) {
+          parsedQty = int.tryParse(match.group(1) ?? '1') ?? 1;
+        }
+        newRows.add(OrderItemRow(selectedProduct: product, qty: parsedQty));
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('AI 분석 실패: $e')));
-    } finally {
-      setState(() => isLoading = false);
+    }
+
+    setState(() {
+      if (newRows.isNotEmpty) orderRows = newRows;
+    });
+
+    if (newRows.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✨ 내장 분석 완료! 데이터가 즉시 입력되었습니다.', style: TextStyle(fontSize: 18))));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('⚠️ 품목을 자동으로 찾지 못했습니다. 수동으로 입력해주세요.', style: TextStyle(fontSize: 18))));
     }
   }
 

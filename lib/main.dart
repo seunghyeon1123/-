@@ -23,8 +23,10 @@ class MyApp extends StatelessWidget {
       title: '재고관리 (MVP)',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF586B54)), // 스톤 섀도우 톤
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF586B54)),
         useMaterial3: true,
+        // 🟢 아래 한 줄을 추가하여 한글 조합 중 깨짐 현상을 방지합니다.
+        fontFamilyFallback: const ['Apple SD Gothic Neo', 'Malgun Gothic', 'sans-serif'],
       ),
       home: const MainScreen(),
     );
@@ -42,9 +44,9 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
 
-    // ✅ 1. 탭 메뉴 리스트 구성 (현장 작업자용 '작업지시' 탭 추가)
+// ✅ 1. 탭 메뉴 리스트 구성 (관리자/직원 모두 첫 화면으로 주문현황 배치)
     final List<Tab> tabs = [
-      if (!kIsWeb) const Tab(icon: Icon(Icons.assignment), text: '주문현황'), // 🟢 모바일 첫 화면으로 배치!
+      const Tab(icon: Icon(Icons.assignment), text: '주문현황'), // 🟢 조건문 삭제! (웹/모바일 공통)
       const Tab(icon: Icon(Icons.qr_code_2), text: '생산 QR'),
       const Tab(icon: Icon(Icons.location_on), text: '위치 QR'),
       if (!kIsWeb) const Tab(icon: Icon(Icons.login), text: '입고(스캔)'),
@@ -55,7 +57,7 @@ class _MainScreenState extends State<MainScreen> {
 
     // ✅ 2. 실제 화면 리스트 구성
     final List<Widget> tabViews = [
-      if (!kIsWeb) const WorkOrderScreen(), // 🟢 모바일 첫 화면 연결
+      const WorkOrderScreen(), // 🟢 조건문 삭제! (웹/모바일 공통)
       const ProductQrCreateScreen(),
       const LocationQrCreateScreen(),
       if (!kIsWeb) const InboundScanScreen(),
