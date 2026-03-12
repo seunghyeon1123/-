@@ -12,7 +12,19 @@ class ProductItem {
   });
 }
 
-const List<String> productCategories = ['전체', '대발', '배접', '2.7/3.6/120', '옻지', '인쇄/나염', '기타'];
+// lib/models/product_catalog.dart 수정
+const List<String> productCategories = [
+  '전체',
+  '외발',
+  '소발',
+  '대발',
+  '배접',
+  '2.7/3.6/120',
+  '옻지',
+  '인쇄/나염',
+  '기타'
+];
+// 품목 속성은 그대로 유지합니다.
 const List<String> allProductAttrs = ['순지', '국내', '백닥', '무표백', '황촉규', '無', '색', '옻'];
 
 const List<ProductItem> catalogItems = [

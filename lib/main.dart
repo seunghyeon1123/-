@@ -19,14 +19,16 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+// lib/main.dart 파일의 MaterialApp 부분 수정
+
     return MaterialApp(
-      title: '재고관리 (MVP)',
+      title: '안동한지 재고관리',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF586B54)),
         useMaterial3: true,
-        // 🟢 아래 한 줄을 추가하여 한글 조합 중 깨짐 현상을 방지합니다.
-        fontFamilyFallback: const ['Apple SD Gothic Neo', 'Malgun Gothic', 'sans-serif'],
+        // 🟢 한글 깨짐/타이핑 버그를 막기 위한 시스템 폰트 강제 적용!
+        fontFamilyFallback: const ['Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', 'sans-serif'],
       ),
       home: const MainScreen(),
     );
