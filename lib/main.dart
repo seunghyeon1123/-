@@ -1,16 +1,23 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb; // ✅ 웹(Web) 환경인지 감지하는 패키지 추가
+import 'package:flutter/foundation.dart' show kIsWeb;
 
-// 화면 임포트
 import 'screens/product_qr_create_screen.dart';
 import 'screens/location_qr_create_screen.dart';
 import 'screens/inbound_scan_screen.dart';
 import 'screens/outbound_scan_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/web_order_screen.dart';
-import 'screens/work_order_screen.dart'; // 🟢 신규: 작업 지시 화면
+import 'screens/work_order_screen.dart';
+import 'screens/store_pos_screen.dart';
+import 'screens/login_screen.dart'; // 🟢 로그인 화면 임포트
+import 'services/auth_service.dart'; // 🟢 로그인 상태 관리 임포트
 
-void main() {
+void main() async {
+  // 🟢 앱 시작 전에 로그인 기록이 있는지 확인합니다.
+  WidgetsFlutterBinding.ensureInitialized();
+  await AuthService.loadSavedAuth();
+
   runApp(const MyApp());
 }
 
@@ -19,71 +26,95 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-// lib/main.dart 파일의 MaterialApp 부분 수정
-
     return MaterialApp(
-      title: '안동한지 재고관리',
+      title: '안동한지 WMS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF586B54)),
         useMaterial3: true,
-        // 🟢 한글 깨짐/타이핑 버그를 막기 위한 시스템 폰트 강제 적용!
-        fontFamilyFallback: const ['Malgun Gothic', 'Apple SD Gothic Neo', 'NanumGothic', 'sans-serif'],
+        fontFamilyFallback: const ['Apple SD Gothic Neo', 'Malgun Gothic', 'sans-serif'],
       ),
-      home: const MainScreen(),
+      // 🟢 로그인되어 있으면 MainScreen, 아니면 LoginScreen 띄우기
+      home: AuthService.isLoggedIn ? const MainScreen() : const LoginScreen(),
     );
   }
 }
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
-
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
 
 class _MainScreenState extends State<MainScreen> {
+
+  // 🟢 로그아웃 함수
+  void _doLogout() async {
+    await AuthService.logout();
+    if (mounted) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const LoginScreen()));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // 🟢 현재 로그인한 사람의 권한이 '관리자'인지 확인
+    bool isAdmin = AuthService.userRole == '관리자';
 
-// ✅ 1. 탭 메뉴 리스트 구성 (관리자/직원 모두 첫 화면으로 주문현황 배치)
-    final List<Tab> tabs = [
-      const Tab(icon: Icon(Icons.assignment), text: '주문현황'), // 🟢 조건문 삭제! (웹/모바일 공통)
-      const Tab(icon: Icon(Icons.qr_code_2), text: '생산 QR'),
-      const Tab(icon: Icon(Icons.location_on), text: '위치 QR'),
-      if (!kIsWeb) const Tab(icon: Icon(Icons.login), text: '입고(스캔)'),
-      if (!kIsWeb) const Tab(icon: Icon(Icons.logout), text: '출고(스캔)'),
-      const Tab(icon: Icon(Icons.inventory_2_outlined), text: '재고조회'),
-      const Tab(icon: Icon(Icons.shopping_cart_checkout), text: '주문 입력(웹)'),
-    ];
+    final List<Tab> tabs = [];
+    final List<Widget> tabViews = [];
 
-    // ✅ 2. 실제 화면 리스트 구성
-    final List<Widget> tabViews = [
-      const WorkOrderScreen(), // 🟢 조건문 삭제! (웹/모바일 공통)
-      const ProductQrCreateScreen(),
-      const LocationQrCreateScreen(),
-      if (!kIsWeb) const InboundScanScreen(),
-      if (!kIsWeb) const OutboundScanScreen(),
-      const InventoryScreen(),
-      const WebOrderScreen(),
-    ];
+    // 1. 주문 현황 (관리자만 보임)
+    if (isAdmin) {
+      tabs.add(const Tab(icon: Icon(Icons.assignment), text: '주문현황'));
+      tabViews.add(const WorkOrderScreen());
+    }
+
+    // 2. 생산/위치 QR (모두 보임)
+    tabs.add(const Tab(icon: Icon(Icons.qr_code_2), text: '생산 QR'));
+    tabViews.add(const ProductQrCreateScreen());
+    tabs.add(const Tab(icon: Icon(Icons.location_on), text: '위치 QR'));
+    tabViews.add(const LocationQrCreateScreen());
+
+    // 3. 스캐너 및 POS (모바일에서만 보임)
+    if (!kIsWeb) {
+      tabs.add(const Tab(icon: Icon(Icons.login), text: '입고(스캔)'));
+      tabViews.add(const InboundScanScreen());
+      tabs.add(const Tab(icon: Icon(Icons.logout), text: '출고(스캔)'));
+      tabViews.add(const OutboundScanScreen());
+      tabs.add(const Tab(icon: Icon(Icons.point_of_sale), text: '매장 POS'));
+      tabViews.add(const StorePosScreen());
+    }
+
+    // 4. 재고 조회 (모두 보임)
+    tabs.add(const Tab(icon: Icon(Icons.inventory_2_outlined), text: '재고조회'));
+    tabViews.add(const InventoryScreen());
+
+    // 5. 주문 입력(웹) (관리자만 보임)
+    if (isAdmin) {
+      tabs.add(const Tab(icon: Icon(Icons.shopping_cart_checkout), text: '주문 입력(웹)'));
+      tabViews.add(const WebOrderScreen());
+    }
 
     return DefaultTabController(
-      length: tabs.length, // 탭 개수를 상황에 맞게 자동 조절
+      length: tabs.length,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('안동한지 WMS', style: TextStyle(fontWeight: FontWeight.bold)),
+          // 🟢 상단에 로그인한 사람 이름과 직급 표시
+          title: Text('${AuthService.userName}님 (${AuthService.userRole})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
           elevation: 2,
+          actions: [
+            IconButton(icon: const Icon(Icons.logout), onPressed: _doLogout, tooltip: '로그아웃'),
+          ],
           bottom: TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            labelPadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            tabs: tabs, // 구성된 탭 리스트 적용
+            tabs: tabs,
           ),
         ),
         body: TabBarView(
-          physics: const NeverScrollableScrollPhysics(), // 스캐너 화면에서 스와이프 오작동 방지
-          children: tabViews, // 구성된 화면 리스트 적용
+          physics: const NeverScrollableScrollPhysics(),
+          children: tabViews,
         ),
       ),
     );

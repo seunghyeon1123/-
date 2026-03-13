@@ -63,17 +63,20 @@ class _WebOrderScreenState extends State<WebOrderScreen> with AutomaticKeepAlive
     throw Exception('HTTP Error: ${res.statusCode}');
   }
 
-  // 고객 목록과 재고를 한 번에 불러옴
+// 🟢 고객 목록과 재고를 한 번에 불러옴 (초고속 버전)
   Future<void> _fetchInitialData() async {
     setState(() => isLoading = true);
     try {
-      final resCust = await _post({"action": "getCustomers"});
-      final resInv = await _post({"action": "inventory"}); // 전체 재고 불러오기
+      // 🚀 두 번 통신하던 걸 'getFastScreenData' 1번으로 단축!
+      final res = await _post({"action": "getFastScreenData"});
 
-      setState(() {
-        if (resCust["ok"] == true) customers = List<Map<String, dynamic>>.from(resCust["customers"] ?? []);
-        if (resInv["ok"] == true) currentInventory = resInv["items"] ?? [];
-      });
+      if (res["ok"] == true) {
+        setState(() {
+          // 서버가 한방에 보내준 고객 목록과 재고 데이터를 각각 나눠 담음
+          customers = List<Map<String, dynamic>>.from(res["customers"] ?? []);
+          currentInventory = res["items"] ?? [];
+        });
+      }
     } catch (e) {
       debugPrint("초기 데이터 불러오기 실패: $e");
     } finally {

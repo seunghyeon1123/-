@@ -6,6 +6,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import '../services/auth_service.dart'; // 🟢 로그인한 사람 정보 가져오기 위해 추가!
 
 class InboundScanScreen extends StatefulWidget {
   const InboundScanScreen({super.key});
@@ -25,7 +26,6 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
   final Color successGreen = const Color(0xFF66BB6A);
   final Color warningOrange = const Color(0xFFFFA726);
 
-  // 🟢 핵심: 스캔 모드 스위치 (inbound: 창고입고, unpack: 매장개봉)
   String scanMode = 'inbound';
 
   Map<String, dynamic>? product;
@@ -116,7 +116,6 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
         scanningProduct = false;
         isProcessingScan = false;
 
-        // 🟢 [매장 개봉] 모드일 때는 위치 스캔을 건너뛰고 바로 매장으로 할당!
         if (scanMode == 'unpack') {
           location = {"locationCode": "STORE-DISPLAY", "warehouse": "매장 낱장 진열대", "zone": "", "rack": "", "bin": ""};
           _setStatus('매장 진열 인식 완료 → 개봉 확정 가능', successGreen);
@@ -130,14 +129,12 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       return;
     }
 
-    // 창고 입고 모드일 때만 위치 스캔 수행
     if (type != 'location') { _setStatus('위치 QR을 스캔하세요.', warningOrange); setState(() => isProcessingScan = false); return; }
     setState(() { location = data; isProcessingScan = false; });
     _setStatus('위치 인식 완료 → 입고 확정 가능', successGreen); _showBottomMessage('✔️ 위치 스캔 완료. 입고 확정 버튼을 눌러주세요.');
     controller.stop();
   }
 
-  // 🟢 서버로 전송할 때 'inbound'인지 'unpack'인지 구분해서 보냅니다.
   Future<void> _confirmAction() async {
     final p = product; final l = location;
     if (p == null || l == null) return;
@@ -147,7 +144,8 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     try {
       final resp = await _postJsonWithRedirect({
         "time": DateTime.now().toIso8601String(),
-        "type": scanMode, // 🟢 inbound 또는 unpack 전송
+        "type": scanMode,
+        "userName": AuthService.userName ?? "알수없음", // 🟢 핵심: 작업자 이름표 추가!
         "tempId": p["tempId"],
         "sku": p["sku"],
         "name": p["name"],
@@ -185,7 +183,12 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
     if (lastBatchId == null) return;
     setState(() => isUndoing = true); _setStatus('작업 취소 중...', warningOrange);
     try {
-      final resp = await _postJsonWithRedirect({ "action": "undo", "targetType": scanMode, "targetId": lastBatchId });
+      final resp = await _postJsonWithRedirect({
+        "action": "undo",
+        "targetType": scanMode,
+        "targetId": lastBatchId,
+        "userName": AuthService.userName ?? "알수없음" // 🟢 취소할 때도 이름표 달기!
+      });
       if (resp["ok"] == true) {
         _setStatus('취소 성공', successGreen); _showBottomMessage('✅ 방금 처리한 내역이 삭제되었습니다.');
         setState(() => lastBatchId = null);
@@ -294,7 +297,6 @@ class _InboundScanScreenState extends State<InboundScanScreen> {
       ),
       body: LayoutBuilder(builder: (context, constraints) {
         return Column(children: [
-          // 🟢 스캔 모드 선택 스위치
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
             child: CupertinoSlidingSegmentedControl<String>(
